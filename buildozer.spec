@@ -14,8 +14,9 @@ source.exclude_patterns = .git,__pycache__,*.pyc,*.pyo,*.swp,.buildozer,bin,data
 
 # Версия
 version = 1.0.0
-# version.filename оставляем пустым — buildozer сам генерирует имя
-# (его шаблон %(app)s-%(version)s-... ломает configparser-интерполяцию)
+# version.filename: задаём явно, без %(app)s-интерполяции (buildozer
+# падает на ней, потому что 'app' — это секция, а не опция).
+version.filename = AegisNeuro-1.0.0-arm64-v8a-debug.apk
 # version.regex убран: опционален и без __version__ в коде шумит в логах.
 
 # Главный модуль
