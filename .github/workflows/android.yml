@@ -37,7 +37,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             python3-pip python3-setuptools python3-venv \
-            cython \
             openjdk-17-jdk-headless \
             autoconf automake libtool pkg-config \
             zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 \
@@ -52,15 +51,24 @@ jobs:
 
       - name: Accept Android SDK licenses
         run: |
-          mkdir -p $ANDROID_HOME/licenses || true
-          # p4a сам скачивает нужные лицензии; здесь ставим заглушки.
-          echo "8933bad161af4178b1185d1a37fbf41ea5269c55" > $ANDROID_HOME/licenses/android-sdk-license || true
-          echo "d56f5187479451eabf01fb78af6dfcb131a6481e" >> $ANDROID_HOME/licenses/android-sdk-license || true
+          set -e
+          mkdir -p $ANDROID_HOME/licenses
+          # Заглушки для известных хешей лицензий (p4a/sdkmanger проверяет их).
+          echo "8933bad161af4178b1185d1a37fbf41ea5269c55" > $ANDROID_HOME/licenses/android-sdk-license
+          echo "d56f5187479451eabf01fb78af6dfcb131a6481e" >> $ANDROID_HOME/licenses/android-sdk-license
+          echo "24333f8a63b6825ea9c5514f83c2829b004d1fee" >> $ANDROID_HOME/licenses/android-sdk-license
+          # Если sdkmanager уже стоит (бывает с другими image) — подтвердить лицензии явно.
+          if command -v sdkmanager >/dev/null 2>&1; then
+            yes 2>/dev/null | sdkmanager --licenses >/dev/null 2>&1 || true
+          fi
 
       - name: Build APK (debug, arm64)
         env:
           ANDROID_HOME: ${{ runner.workspace }}/.android-sdk
           ANDROID_SDK_ROOT: ${{ runner.workspace }}/.android-sdk
+          # Gradle в Kivy любит жрать память; дефолт 512 МБ не хватает.
+          GRADLE_OPTS: "-Xmx4g -Dorg.gradle.jvmargs=-Xmx4g"
+          JAVA_TOOL_OPTIONS: "-Xmx4g"
         run: |
           buildozer -v android debug 2>&1 | tee build.log
 
