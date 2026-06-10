@@ -11,87 +11,41 @@ jobs:
   build-android:
     name: Build arm64-v8a debug APK
     runs-on: ubuntu-22.04
-    timeout-minutes: 60
+    # Официальный Kivy-образ: buildozer + p4a + Android SDK + NDK + cython
+    # уже предустановлены и проверено совместимы. Исключает весь класс
+    # проблем "buildozer поставил не ту версию".
+    container:
+      image: kivy/buildozer:latest
+      options: --privileged
+    timeout-minutes: 90
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Clean stale buildozer state
-        # buildozer 1.5.x кешировал повреждённый spec-парсинг в ~/.buildozer,
-        # доставал его при повторных run'ах. Чистим начисто, чтобы парсинг
-        # всегда шёл с нуля.
-        run: |
-          rm -rf ~/.buildozer || true
-          echo "Stale buildozer state cleaned."
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-
-      - name: Cache gradle (buildozer НЕ кешируем — был баг со stale spec)
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle
-          key: ${{ runner.os }}-gradle-${{ hashFiles('buildozer.spec') }}
-          restore-keys: |
-            ${{ runner.os }}-gradle-
-
-      - name: Install system dependencies for python-for-android
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            python3-pip python3-setuptools python3-venv \
-            openjdk-17-jdk-headless \
-            autoconf automake libtool pkg-config \
-            zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 \
-            cmake libffi-dev libssl-dev \
-            build-essential ccache \
-            git unzip wget
-
-      - name: Install buildozer (pinned 1.4.0 — 1.5.0 has configparser bug on version.filename)
-        run: |
-          python -m pip install --upgrade pip
-          pip install --upgrade "buildozer==1.4.0" "cython==0.29.33"
-
-      - name: Verify buildozer.spec before build
+      - name: Verify environment
         run: |
           echo "=== CWD: $(pwd) ==="
-          echo "=== buildozer.spec sha: $(sha256sum buildozer.spec | cut -d' ' -f1) ==="
-          echo "=== buildozer.spec version* lines: ==="
-          grep -n "version" buildozer.spec || true
           echo "=== buildozer version: $(buildozer --version 2>&1) ==="
+          echo "=== python version: $(python --version 2>&1) ==="
+          echo "=== cython version: $(cython --version 2>&1 || echo 'cython not in PATH') ==="
+          echo "=== ANDROID_HOME: $ANDROID_HOME ==="
+          ls -la $ANDROID_HOME 2>&1 | head -5 || true
+          echo "=== buildozer.spec sha: $(sha256sum buildozer.spec | cut -d' ' -f1) ==="
+          echo "=== version* lines in spec: ==="
+          grep -n "version" buildozer.spec || true
 
-      - name: Accept Android SDK licenses
+      - name: Clean stale buildozer state
         run: |
-          set -e
-          mkdir -p $ANDROID_HOME/licenses
-          # Заглушки для известных хешей лицензий (p4a/sdkmanger проверяет их).
-          echo "8933bad161af4178b1185d1a37fbf41ea5269c55" > $ANDROID_HOME/licenses/android-sdk-license
-          echo "d56f5187479451eabf01fb78af6dfcb131a6481e" >> $ANDROID_HOME/licenses/android-sdk-license
-          echo "24333f8a63b6825ea9c5514f83c2829b004d1fee" >> $ANDROID_HOME/licenses/android-sdk-license
-          # Если sdkmanager уже стоит (бывает с другими image) — подтвердить лицензии явно.
-          if command -v sdkmanager >/dev/null 2>&1; then
-            yes 2>/dev/null | sdkmanager --licenses >/dev/null 2>&1 || true
-          fi
+          rm -rf ~/.buildozer .buildozer || true
+          echo "Stale buildozer state cleaned."
 
       - name: Build APK (debug, arm64)
         env:
-          ANDROID_HOME: ${{ runner.workspace }}/.android-sdk
-          ANDROID_SDK_ROOT: ${{ runner.workspace }}/.android-sdk
-          # Gradle в Kivy любит жрать память; дефолт 512 МБ не хватает.
           GRADLE_OPTS: "-Xmx4g -Dorg.gradle.jvmargs=-Xmx4g"
           JAVA_TOOL_OPTIONS: "-Xmx4g"
         run: |
           set -o pipefail
-          echo "=== CWD: $(pwd) ==="
-          echo "=== buildozer.spec in CWD: ==="
-          ls -la buildozer.spec
-          echo "=== version* lines: ==="
-          grep -n "version" buildozer.spec || true
-          echo "=== running buildozer ==="
           buildozer -v android debug 2>&1 | tee build.log
           echo "=== buildozer exit code: ${PIPESTATUS[0]} ==="
           echo "=== final bin/ contents ==="
@@ -111,7 +65,6 @@ jobs:
           retention-days: 7
 
       - name: Locate APK
-        id: locate_apk
         if: success()
         run: |
           echo "Looking for APK in bin/..."
