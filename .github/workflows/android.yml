@@ -22,15 +22,14 @@ jobs:
         with:
           python-version: "3.10"
 
-      - name: Cache buildozer and gradle
+      - name: Cache gradle (buildozer НЕ кешируем — был баг со stale spec)
         uses: actions/cache@v4
         with:
           path: |
-            ~/.buildozer
             ~/.gradle
-          key: ${{ runner.os }}-buildozer-${{ hashFiles('buildozer.spec') }}
+          key: ${{ runner.os }}-gradle-${{ hashFiles('buildozer.spec') }}
           restore-keys: |
-            ${{ runner.os }}-buildozer-
+            ${{ runner.os }}-gradle-
 
       - name: Install system dependencies for python-for-android
         run: |
@@ -71,6 +70,12 @@ jobs:
           JAVA_TOOL_OPTIONS: "-Xmx4g"
         run: |
           set -o pipefail
+          echo "=== CWD: $(pwd) ==="
+          echo "=== buildozer.spec in CWD: ==="
+          ls -la buildozer.spec
+          echo "=== version* lines: ==="
+          grep -n "version" buildozer.spec || true
+          echo "=== running buildozer ==="
           buildozer -v android debug 2>&1 | tee build.log
           echo "=== buildozer exit code: ${PIPESTATUS[0]} ==="
           echo "=== final bin/ contents ==="
