@@ -35,7 +35,7 @@ jobs:
             uuid-dev tk-dev libbluetooth-dev \
             unzip
 
-      - name: Install Android SDK cmdline-tools (sdkmanager)
+      - name: Install Android SDK cmdline-tools and build-tools
         run: |
           set -e
           ANDROID_SDK_ROOT="${HOME}/.buildozer/android/platform/android-sdk"
@@ -46,14 +46,25 @@ jobs:
             echo "Downloading cmdline-tools..."
             curl -fsSL -o cmdline-tools.zip "${CMDLINE_TOOLS_URL}"
             unzip -q cmdline-tools.zip
-            # Google поставляет архив с корневой папкой cmdline-tools/,
-            # а buildozer ожидает cmdline-tools/latest/.
             mv cmdline-tools "${ANDROID_SDK_ROOT}/cmdline-tools/latest"
-            echo "cmdline-tools installed at ${ANDROID_SDK_ROOT}/cmdline-tools/latest"
+            echo "cmdline-tools installed"
           else
             echo "cmdline-tools already present"
           fi
-          ls -la "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/" | head -5
+          # Принимаем все лицензии (для уже скачанного SDK, build-tools и platform-tools)
+          yes 2>/dev/null | "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+          # Докачиваем build-tools и platform-tools, чтобы buildozer не искал старый tools/bin/sdkmanager
+          "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" \
+            "platform-tools" \
+            "platforms;android-33" \
+            "build-tools;33.0.2" >/dev/null 2>&1 || true
+          # Проверяем, что buildozer увидит sdkmanager
+          ls -la "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" || true
+          mkdir -p "${ANDROID_SDK_ROOT}/tools/bin"
+          ln -sf "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" \
+                 "${ANDROID_SDK_ROOT}/tools/bin/sdkmanager" || true
+          echo "=== sdkmanager at expected location ==="
+          ls -la "${ANDROID_SDK_ROOT}/tools/bin/sdkmanager" || true
 
       - name: Pre-accept Android SDK licenses
         run: |

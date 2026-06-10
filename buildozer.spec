@@ -26,9 +26,12 @@ icon.filename = icon.png
 orientation = portrait
 
 # Android API
-android.api = 31
+android.api = 33
 android.minapi = 24
 android.ndk_api = 21
+# Принудительно просим buildozer через sdkmanager поставить build-tools.
+# Иначе он ищет tools/bin/sdkmanager (устаревший путь) и падает.
+android.sdk = 33
 
 # Архитектура: только arm64 — современные Android 8+
 android.archs = arm64-v8a
