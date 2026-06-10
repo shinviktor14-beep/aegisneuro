@@ -14,10 +14,6 @@ source.exclude_patterns = .git,__pycache__,*.pyc,*.pyo,*.swp,.buildozer,bin,data
 
 # Версия
 version = 1.0.0
-# version.filename: задаём явно, без %(app)s-интерполяции (buildozer
-# падает на ней, потому что 'app' — это секция, а не опция).
-version.filename = AegisNeuro-1.0.0-arm64-v8a-debug.apk
-# version.regex убран: опционален и без __version__ в коде шумит в логах.
 
 # Главный модуль
 mainfilename = main.py
@@ -28,9 +24,6 @@ icon.filename = icon.png
 
 # Ориентация экрана
 orientation = portrait
-
-# Включаем AIDL (нужно для Camera2 API)
-android.enable_aidl = True
 
 # Android API
 android.api = 31
@@ -45,13 +38,7 @@ android.permissions = CAMERA,FLASHLIGHT,WAKE_LOCK,MODIFY_AUDIO_SETTINGS
 android.meta_data = com.google.android.gms.version=0
 
 # Зависимости для сборки
-requirements = python3,kivy==2.3.0,kivymd==1.1.1,numpy,pyjnius,android
-
-# Цикл рендеринга (sdl2 — стандарт для Kivy)
-p4a.activity_class_name = org.kivy.android.PythonActivity
+requirements = python3,kivy==2.3.0,kivymd,numpy,pyjnius
 
 [buildozer]
 log_level = 2
-
-# Цвета темы Android (по желанию)
-android.antipattern = True

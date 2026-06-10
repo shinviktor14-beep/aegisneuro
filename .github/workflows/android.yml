@@ -11,34 +11,41 @@ jobs:
   build-android:
     name: Build arm64-v8a debug APK
     runs-on: ubuntu-22.04
-    # Официальный Kivy-образ: buildozer + p4a + Android SDK + NDK + cython
-    # уже предустановлены и проверено совместимы. Исключает весь класс
-    # проблем "buildozer поставил не ту версию".
-    container:
-      image: kivy/buildozer:latest
-      options: --privileged
     timeout-minutes: 90
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            python3 python3-pip python3-venv \
+            autoconf automake cmake libltdl-dev libtool \
+            libffi-dev libssl-dev libbz2-dev libsqlite3-dev \
+            zlib1g-dev liblzma-dev libreadline-dev libncurses5-dev \
+            libncursesw5-dev libgdbm-dev libgdbm-compat-dev \
+            uuid-dev tk-dev libbluetooth-dev \
+            openjdk-17-jdk unzip
+
+      - name: Install buildozer and cython
+        run: |
+          pip install --upgrade pip setuptools wheel
+          pip install buildozer cython
+
       - name: Verify environment
         run: |
           echo "=== CWD: $(pwd) ==="
           echo "=== buildozer version: $(buildozer --version 2>&1) ==="
-          echo "=== python version: $(python --version 2>&1) ==="
-          echo "=== cython version: $(cython --version 2>&1 || echo 'cython not in PATH') ==="
-          echo "=== ANDROID_HOME: $ANDROID_HOME ==="
-          ls -la $ANDROID_HOME 2>&1 | head -5 || true
+          echo "=== python version: $(python3 --version 2>&1) ==="
+          echo "=== cython version: $(cython --version 2>&1 || echo 'cython not found') ==="
+          echo "=== JAVA_HOME: ${JAVA_HOME:-not set} ==="
           echo "=== buildozer.spec sha: $(sha256sum buildozer.spec | cut -d' ' -f1) ==="
           echo "=== version* lines in spec: ==="
           grep -n "version" buildozer.spec || true
-
-      - name: Clean stale buildozer state
-        run: |
-          rm -rf ~/.buildozer .buildozer || true
-          echo "Stale buildozer state cleaned."
 
       - name: Build APK (debug, arm64)
         env:
