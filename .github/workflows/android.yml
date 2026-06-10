@@ -31,13 +31,22 @@ jobs:
             uuid-dev tk-dev libbluetooth-dev \
             openjdk-17-jdk unzip
 
-      - name: Accept Android SDK licenses
+      - name: Setup Android SDK and accept licenses
         run: |
           export ANDROID_HOME="${HOME}/.buildozer/android/platform/android-sdk"
+          mkdir -p "${ANDROID_HOME}/cmdline-tools/latest"
+          # Download Android SDK Command Line Tools
+          CMDLINE_TOOLS_URL="https://dl.google.com/android/repository/commandlinetools-linux-11042270_latest.zip"
+          curl -sL "${CMDLINE_TOOLS_URL}" -o /tmp/cmdline-tools.zip
+          unzip -q /tmp/cmdline-tools.zip -d /tmp/cmdline-tools
+          mv /tmp/cmdline-tools/cmdline-tools/* "${ANDROID_HOME}/cmdline-tools/latest/" || true
+          # Accept all licenses
           mkdir -p "${ANDROID_HOME}/licenses"
           echo "24333f8a63b6825ea9c5514f83c2829b004d1fee" > "${ANDROID_HOME}/licenses/android-sdk-license"
           echo "d56f5187479341e3f443e4ec59e5a8af79cb0a3d" >> "${ANDROID_HOME}/licenses/android-sdk-license"
           echo "84831b9409646a918e3a3b024b4b9e0e4a272d7b" >> "${ANDROID_HOME}/licenses/android-sdk-license"
+          # Install required SDK components
+          yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --sdk_root="${ANDROID_HOME}" "platform-tools" "build-tools;37.0.0" "platforms;android-35"
 
       - name: Install buildozer and cython
         run: |
