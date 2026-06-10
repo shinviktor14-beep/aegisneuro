@@ -36,7 +36,7 @@ android.archs = arm64-v8a
 android.accept_sdk_licenses = True
 
 # Разрешения
-android.permissions = CAMERA,FLASHLIGHT,WAKE_LOCK,MODIFY_AUDIO_SETTINGS
+android.permissions = CAMERA,WAKE_LOCK,MODIFY_AUDIO_SETTINGS
 android.meta_data = com.google.android.gms.version=0
 
 # Зависимости для сборки
