@@ -1,0 +1,29 @@
+# Runtime data (user-specific — never commit)
+aegis_user_brain_profile.json
+aegis_historical_baseline.json
+data/*.json
+!data/.gitkeep
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+
+# Buildozer
+.buildozer/
+bin/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Logs / OS
+*.log
+build.log

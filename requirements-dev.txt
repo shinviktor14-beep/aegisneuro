@@ -1,0 +1,16 @@
+# Зависимости для локального запуска main.py на десктопе (Windows/Linux/Mac).
+# Эти пакеты НЕ используются buildozer'ом (он собирает APK по своим рецептам из buildozer.spec).
+# Установка: pip install -r requirements-dev.txt
+# Запуск:    python main.py
+#
+# На Android pyjnius встроен в рецепт python-for-android, ставить не нужно.
+
+kivy>=2.3.0
+kivymd>=1.1.1
+numpy>=1.24
+pyjnius>=1.6.1
+# pyaudio оставлен для desktop-фоллбэка в aegis_audio_engine.py, на Windows часто
+# требует wheel. Если сборка падает — pip install pipwin && pipwin install pyaudio.
+pyaudio>=0.2.14
+# Опционально: opencv-python нужен только test_camera_ppg.py
+opencv-python>=4.8

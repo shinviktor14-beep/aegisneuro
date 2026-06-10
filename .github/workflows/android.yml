@@ -1,0 +1,82 @@
+name: Build AegisNeuro Android APK
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build-android:
+    name: Build arm64-v8a debug APK
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Cache buildozer and gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.buildozer
+            ~/.gradle
+          key: ${{ runner.os }}-buildozer-${{ hashFiles('buildozer.spec') }}
+          restore-keys: |
+            ${{ runner.os }}-buildozer-
+
+      - name: Install system dependencies for python-for-android
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            python3-pip python3-setuptools python3-venv \
+            cython \
+            openjdk-17-jdk-headless \
+            autoconf automake libtool pkg-config \
+            zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 \
+            cmake libffi-dev libssl-dev \
+            build-essential ccache \
+            git unzip wget
+
+      - name: Install buildozer
+        run: |
+          python -m pip install --upgrade pip
+          pip install --upgrade buildozer cython==0.29.33
+
+      - name: Accept Android SDK licenses
+        run: |
+          mkdir -p $ANDROID_HOME/licenses || true
+          # p4a сам скачивает нужные лицензии; здесь ставим заглушки.
+          echo "8933bad161af4178b1185d1a37fbf41ea5269c55" > $ANDROID_HOME/licenses/android-sdk-license || true
+          echo "d56f5187479451eabf01fb78af6dfcb131a6481e" >> $ANDROID_HOME/licenses/android-sdk-license || true
+
+      - name: Build APK (debug, arm64)
+        env:
+          ANDROID_HOME: ${{ runner.workspace }}/.android-sdk
+          ANDROID_SDK_ROOT: ${{ runner.workspace }}/.android-sdk
+        run: |
+          buildozer -v android debug 2>&1 | tee build.log
+
+      - name: Locate APK
+        id: locate_apk
+        run: |
+          echo "Looking for APK in bin/..."
+          ls -la bin/ || true
+          find . -name "*.apk" -type f 2>/dev/null | head -20
+
+      - name: Upload APK as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aegisneuro-arm64-debug
+          path: |
+            bin/*.apk
+            !bin/*.aab
+          if-no-files-found: error
+          retention-days: 14
