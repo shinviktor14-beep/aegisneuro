@@ -14,8 +14,9 @@ source.exclude_patterns = .git,__pycache__,*.pyc,*.pyo,*.swp,.buildozer,bin,data
 
 # Версия
 version = 1.0.0
-version.filename = %(app)s-%(version)s-armeabi-v7a-debug.apk
-version.regex = __version__ = ['"](.*)['"]
+# version.filename оставляем пустым — buildozer сам генерирует имя
+# (его шаблон %(app)s-%(version)s-... ломает configparser-интерполяцию)
+# version.regex убран: опционален и без __version__ в коде шумит в логах.
 
 # Главный модуль
 mainfilename = main.py
