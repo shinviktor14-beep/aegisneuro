@@ -31,6 +31,14 @@ jobs:
             uuid-dev tk-dev libbluetooth-dev \
             openjdk-17-jdk unzip
 
+      - name: Accept Android SDK licenses
+        run: |
+          export ANDROID_HOME="${HOME}/.buildozer/android/platform/android-sdk"
+          mkdir -p "${ANDROID_HOME}/licenses"
+          echo "24333f8a63b6825ea9c5514f83c2829b004d1fee" > "${ANDROID_HOME}/licenses/android-sdk-license"
+          echo "d56f5187479341e3f443e4ec59e5a8af79cb0a3d" >> "${ANDROID_HOME}/licenses/android-sdk-license"
+          echo "84831b9409646a918e3a3b024b4b9e0e4a272d7b" >> "${ANDROID_HOME}/licenses/android-sdk-license"
+
       - name: Install buildozer and cython
         run: |
           pip install --upgrade pip setuptools wheel

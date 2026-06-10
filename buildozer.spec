@@ -33,12 +33,14 @@ android.ndk_api = 21
 # Архитектура: только arm64 — современные Android 8+
 android.archs = arm64-v8a
 
+android.accept_sdk_licenses = True
+
 # Разрешения
 android.permissions = CAMERA,FLASHLIGHT,WAKE_LOCK,MODIFY_AUDIO_SETTINGS
 android.meta_data = com.google.android.gms.version=0
 
 # Зависимости для сборки
-requirements = python3,kivy==2.3.0,kivymd,numpy,pyjnius
+requirements = python3,kivy==2.3.0,numpy,pyjnius,kivymd
 
 [buildozer]
 log_level = 2
