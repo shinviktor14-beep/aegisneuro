@@ -35,6 +35,26 @@ jobs:
             uuid-dev tk-dev libbluetooth-dev \
             unzip
 
+      - name: Install Android SDK cmdline-tools (sdkmanager)
+        run: |
+          set -e
+          ANDROID_SDK_ROOT="${HOME}/.buildozer/android/platform/android-sdk"
+          CMDLINE_TOOLS_URL="https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
+          mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools"
+          cd /tmp
+          if [ ! -d "${ANDROID_SDK_ROOT}/cmdline-tools/latest" ]; then
+            echo "Downloading cmdline-tools..."
+            curl -fsSL -o cmdline-tools.zip "${CMDLINE_TOOLS_URL}"
+            unzip -q cmdline-tools.zip
+            # Google поставляет архив с корневой папкой cmdline-tools/,
+            # а buildozer ожидает cmdline-tools/latest/.
+            mv cmdline-tools "${ANDROID_SDK_ROOT}/cmdline-tools/latest"
+            echo "cmdline-tools installed at ${ANDROID_SDK_ROOT}/cmdline-tools/latest"
+          else
+            echo "cmdline-tools already present"
+          fi
+          ls -la "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/" | head -5
+
       - name: Pre-accept Android SDK licenses
         run: |
           # Buildozer will download the Android SDK itself, but we must
