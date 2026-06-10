@@ -70,16 +70,35 @@ jobs:
           GRADLE_OPTS: "-Xmx4g -Dorg.gradle.jvmargs=-Xmx4g"
           JAVA_TOOL_OPTIONS: "-Xmx4g"
         run: |
+          set -o pipefail
           buildozer -v android debug 2>&1 | tee build.log
+          echo "=== buildozer exit code: ${PIPESTATUS[0]} ==="
+          echo "=== final bin/ contents ==="
+          ls -laR bin/ 2>&1 | head -50 || true
+          find . -name "*.apk" -type f 2>/dev/null | head -20
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aegisneuro-build-log
+          path: |
+            build.log
+            .buildozer/**/*.log
+            .buildozer/**/build/output/**/*.txt
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Locate APK
         id: locate_apk
+        if: success()
         run: |
           echo "Looking for APK in bin/..."
           ls -la bin/ || true
           find . -name "*.apk" -type f 2>/dev/null | head -20
 
       - name: Upload APK as artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: aegisneuro-arm64-debug
