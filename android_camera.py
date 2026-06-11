@@ -1,8 +1,8 @@
 """AndroidCameraBridge — обёртка над камерой Android через pyjnius.
 
 Поддерживает два режима:
-  1. Camera2 API (Android 5+, предпочтительно) — ImageReader, YUV_420_888
-  2. Старая Camera API (fallback) — PreviewCallback с NV21
+  1. Camera1 API (fallback, надёжнее на большинстве устройств)
+  2. Camera2 API (Android 5+, предпочтительно, но сложнее через pyjnius)
 
 На не-Android (Windows/Linux/Mac) — безопасный no-op.
 """
@@ -32,14 +32,14 @@ class AndroidCameraBridge:
         self._latest_mean_red: float = 0.0
         self._lock = threading.Lock()
         self._running = False
-        self._ready = False  # True когда кадры реально поступают
+        self._ready = False
         self._frame_count = 0
         self._has_flash = False
-        self._camera_method = "none"  # "camera2", "camera1", "none"
+        self._camera_method = "none"
+        self._error_message = ""
 
-        # Java-объекты
-        self._camera = None
         self._camera1 = None
+        self._camera2 = None
         self._session = None
         self._reader = None
         self._handler_thread = None
@@ -49,53 +49,155 @@ class AndroidCameraBridge:
 
     # -------------------------------------------------------- публичный API
     def request_permission(self) -> None:
+        """Запросить CAMERA-разрешение. Ждём подтверждения."""
         if not self.is_android:
             return
         try:
-            from jnius import autoclass
-            PythonActivity = autoclass("org.kivy.android.PythonActivity")
-            activity = PythonActivity.mActivity
-            PackageManager = autoclass("android.content.pm.PackageManager")
-            PERMISSION_CAMERA = autoclass("android.Manifest$permission").CAMERA
-            granted = activity.checkSelfPermission(PERMISSION_CAMERA)
-            if granted != PackageManager.PERMISSION_GRANTED:
-                activity.requestPermissions([PERMISSION_CAMERA], 1)
-                time.sleep(2.0)
+            # Используем android.permissions из Kivy — надёжнее
+            from android.permissions import request_permission, Permission
+            request_permission(Permission.CAMERA)
+            time.sleep(3.0)  # Ждём пока пользователь нажмёт "Разрешить"
+        except ImportError:
+            # Fallback: pyjnius напрямую
+            try:
+                from jnius import autoclass
+                PythonActivity = autoclass("org.kivy.android.PythonActivity")
+                activity = PythonActivity.mActivity
+                PackageManager = autoclass("android.content.pm.PackageManager")
+                PERMISSION_CAMERA = autoclass("android.Manifest$permission").CAMERA
+                granted = activity.checkSelfPermission(PERMISSION_CAMERA)
+                if granted != PackageManager.PERMISSION_GRANTED:
+                    activity.requestPermissions([PERMISSION_CAMERA], 1)
+                    time.sleep(3.0)
+            except Exception as exc:
+                log.error(f"permission request failed: {exc}")
         except Exception as exc:
             log.error(f"permission request failed: {exc}")
 
     def is_ready(self) -> bool:
-        """Камера открыта и кадры поступают."""
         return self._ready
 
     def get_status_text(self) -> str:
-        """Текстовый статус для UI."""
-        if not self.is_android:
+        if not IS_ANDROID:
             return "Десктоп (камера недоступна)"
         if self._ready:
-            return f"Камера активна ({self._camera_method}, {self._frame_count} кадров)"
+            return f"Камера активна ({self._camera_method})"
+        if self._error_message:
+            return f"Ошибка: {self._error_message}"
         if self._running:
             return "Камера открывается..."
         return "Камера не подключена"
 
     def start_capture(self, target_resolution: tuple[int, int] = (640, 480)) -> bool:
-        if not self.is_android:
+        if not IS_ANDROID:
             log.info("start_capture: desktop fallback (no-op).")
             return False
         if self._running:
             return True
 
-        # Сначала пробуем Camera2, если падает — Camera1
-        if self._start_camera2(target_resolution):
-            self._camera_method = "camera2"
-            return True
-        log.warning("Camera2 failed, trying Camera1 fallback...")
+        # Camera1 сначала — он надёжнее через pyjnius
         if self._start_camera1(target_resolution):
             self._camera_method = "camera1"
             return True
-        log.error("Both Camera2 and Camera1 failed")
-        self.is_android = False
+        log.warning("Camera1 failed, trying Camera2...")
+        if self._start_camera2(target_resolution):
+            self._camera_method = "camera2"
+            return True
+        log.error("Both Camera1 and Camera2 failed")
+        self._error_message = "Ни Camera1, ни Camera2 не открылись"
         return False
+
+    # -------------------------------------------------------- Camera1 (надёжный fallback)
+    def _start_camera1(self, target_resolution: tuple[int, int] = (640, 480)) -> bool:
+        try:
+            from jnius import autoclass
+            Camera = autoclass("android.hardware.Camera")
+            bridge_ref = self
+
+            self._camera1 = Camera.open(0)
+            if self._camera1 is None:
+                self._error_message = "Camera.open() вернул None"
+                return False
+
+            params = self._camera1.getParameters()
+            w, h = target_resolution
+
+            # Подбираем поддерживаемое разрешение
+            supported = params.getSupportedPreviewSizes()
+            best_size = None
+            for s in supported:
+                if s.width <= w and s.height <= h:
+                    if best_size is None or s.width > best_size.width:
+                        best_size = s
+            if best_size is not None:
+                w, h = best_size.width, best_size.height
+            params.setPreviewSize(w, h)
+
+            # Фокус фиксированный (для PPG не нужен автофокус)
+            supported_focus = params.getSupportedFocusModes()
+            if supported_focus:
+                for mode in ["fixed", "infinity", "continuous-video"]:
+                    if mode in supported_focus:
+                        params.setFocusMode(mode)
+                        break
+
+            params.setFlashMode(Camera.Parameters.FLASH_MODE_OFF)
+            self._camera1.setParameters(params)
+
+            # Проверяем флэш
+            flash_modes = params.getSupportedFlashModes()
+            self._has_flash = flash_modes is not None and len(flash_modes) > 0
+
+            PreviewCallback = autoclass("android.hardware.Camera$PreviewCallback")
+
+            class _PreviewCb(PreviewCallback):
+                def onPreviewFrame(self, data, camera):  # noqa: N802
+                    try:
+                        y_size = w * h
+                        if len(data) < y_size:
+                            return
+                        # Центральная область Y-плоскости (NV21)
+                        x0 = int(w * 0.2)
+                        x1 = int(w * 0.8)
+                        y0 = int(h * 0.2)
+                        y1 = int(h * 0.8)
+                        total = 0
+                        n = 0
+                        for row in range(y0, y1):
+                            base = row * w
+                            for col in range(x0, x1):
+                                total += data[base + col] & 0xFF
+                                n += 1
+                        if n == 0:
+                            return
+                        mean = total / n
+                        with bridge_ref._lock:
+                            bridge_ref._latest_mean_red = float(mean)
+                            bridge_ref._frame_count += 1
+                            if bridge_ref._frame_count >= 3:
+                                bridge_ref._ready = True
+                    except Exception as exc:
+                        log.error(f"Camera1 frame error: {exc}")
+
+            self._camera1.setPreviewCallback(_PreviewCb())
+
+            SurfaceTexture = autoclass("android.graphics.SurfaceTexture")
+            self._camera1.setPreviewTexture(SurfaceTexture(10))
+            self._camera1.startPreview()
+            self._running = True
+            log.info(f"Camera1 started: {w}x{h}")
+            return True
+        except Exception as exc:
+            self._error_message = f"Camera1: {exc}"
+            log.error(f"Camera1 failed: {exc}")
+            # Очистка
+            try:
+                if self._camera1 is not None:
+                    self._camera1.release()
+                    self._camera1 = None
+            except Exception:
+                pass
+            return False
 
     # -------------------------------------------------------- Camera2
     def _start_camera2(self, target_resolution: tuple[int, int] = (640, 480)) -> bool:
@@ -162,7 +264,6 @@ class AndroidCameraBridge:
                                 image.close()
                                 return
                             mean = total / n
-                        # PPG: больше красного = палец на камере = значение ниже
                         red_value = (128.0 - mean) + 128.0
                         with bridge_ref._lock:
                             bridge_ref._latest_mean_red = float(red_value)
@@ -171,7 +272,7 @@ class AndroidCameraBridge:
                                 bridge_ref._ready = True
                         image.close()
                     except Exception as exc:
-                        log.error(f"frame error: {exc}")
+                        log.error(f"Camera2 frame error: {exc}")
 
             self._reader.setOnImageAvailableListener(_Listener(), self._handler)
 
@@ -212,9 +313,9 @@ class AndroidCameraBridge:
                                     session.setRepeatingRequest(request, None, bridge._handler)
                                     bridge._session = session
                                     bridge._running = True
-                                    log.info("Camera2 session configured, streaming frames")
+                                    log.info("Camera2 session configured")
                                 except Exception as exc:
-                                    log.error(f"repeating request: {exc}")
+                                    log.error(f"Camera2 repeating request: {exc}")
 
                             def onConfigureFailed(self, session):  # noqa: N802
                                 log.error("Camera2 session configure failed")
@@ -229,77 +330,14 @@ class AndroidCameraBridge:
                 def onDisconnected(self, camera):  # noqa: N802
                     log.warning("Camera2 disconnected")
 
-            self._camera = self._camera_manager.openCamera(
+            self._camera2 = self._camera_manager.openCamera(
                 self._camera_id, _CamCallback(), self._handler
             )
             log.info(f"Camera2 open requested: {self._camera_id}, {w}x{h}")
             return True
         except Exception as exc:
-            log.error(f"Camera2 start_capture failed: {exc}")
-            return False
-
-    # -------------------------------------------------------- Camera1 fallback
-    def _start_camera1(self, target_resolution: tuple[int, int] = (640, 480)) -> bool:
-        """Fallback на старую Camera API — надёжнее на многих устройствах."""
-        try:
-            from jnius import autoclass
-            Camera = autoclass("android.hardware.Camera")
-            bridge_ref = self
-
-            self._camera1 = Camera.open(0)  # задняя камера
-            params = self._camera1.getParameters()
-            w, h = target_resolution
-            params.setPreviewSize(w, h)
-            params.setFocusMode(Camera.Parameters.FOCUS_MODE_FIXED if hasattr(Camera.Parameters, 'FOCUS_MODE_FIXED') else "fixed")
-            params.setFlashMode(Camera.Parameters.FLASH_MODE_OFF)
-            self._camera1.setParameters(params)
-
-            PreviewCallback = autoclass("android.hardware.Camera$PreviewCallback")
-            self._has_flash = params.getSupportedFlashModes() is not None
-
-            class _PreviewCb(PreviewCallback):
-                def onPreviewFrame(self, data, camera):  # noqa: N802
-                    try:
-                        # NV21: Y plane first, then VU interleaved
-                        # Для PPG берём средний Y (яркость) — это работает для красного света фонарика
-                        length = len(data)
-                        # Предполагаем 640x480 NV21
-                        y_size = w * h
-                        if length < y_size:
-                            return
-                        # Берём центральную область Y-плоскости
-                        x0 = int(w * 0.2)
-                        x1 = int(w * 0.8)
-                        y0 = int(h * 0.2)
-                        y1 = int(h * 0.8)
-                        total = 0
-                        n = 0
-                        for row in range(y0, y1):
-                            base = row * w
-                            for col in range(x0, x1):
-                                total += data[base + col] & 0xFF
-                                n += 1
-                        if n == 0:
-                            return
-                        mean = total / n
-                        with bridge_ref._lock:
-                            bridge_ref._latest_mean_red = float(mean)
-                            bridge_ref._frame_count += 1
-                            if bridge_ref._frame_count >= 3:
-                                bridge_ref._ready = True
-                    except Exception as exc:
-                        log.error(f"Camera1 frame error: {exc}")
-
-            self._camera1.setPreviewCallback(_PreviewCb())
-            # Нужна Surface для preview — используем фейковую
-            SurfaceTexture = autoclass("android.graphics.SurfaceTexture")
-            self._camera1.setPreviewTexture(SurfaceTexture(10))
-            self._camera1.startPreview()
-            self._running = True
-            log.info("Camera1 fallback started")
-            return True
-        except Exception as exc:
-            log.error(f"Camera1 fallback failed: {exc}")
+            self._error_message = f"Camera2: {exc}"
+            log.error(f"Camera2 failed: {exc}")
             return False
 
     # -------------------------------------------------------- управление
@@ -307,23 +345,23 @@ class AndroidCameraBridge:
         self._running = False
         self._ready = False
         try:
+            if self._camera1 is not None:
+                self._camera1.stopPreview()
+                self._camera1.setPreviewCallback(None)
+                self._camera1.release()
+                self._camera1 = None
+        except Exception:
+            pass
+        try:
             if self._session is not None:
                 self._session.close()
                 self._session = None
         except Exception:
             pass
         try:
-            if self._camera is not None:
-                self._camera.close()
-                self._camera = None
-        except Exception:
-            pass
-        try:
-            if self._camera1 is not None:
-                self._camera1.stopPreview()
-                self._camera1.setPreviewCallback(None)
-                self._camera1.release()
-                self._camera1 = None
+            if self._camera2 is not None:
+                self._camera2.close()
+                self._camera2 = None
         except Exception:
             pass
         try:
@@ -344,23 +382,9 @@ class AndroidCameraBridge:
             return self._latest_mean_red
 
     def set_flash(self, turn_on: bool) -> None:
-        if not self.is_android:
+        if not IS_ANDROID:
             log.info(f"Фонарик: {'ВКЛ' if turn_on else 'ВЫКЛ'} (desktop stub)")
             return
-        # Camera2: torch mode
-        if self._camera_method == "camera2" and self._camera_manager is not None:
-            try:
-                from jnius import autoclass
-                if self._camera_id is None:
-                    Context = autoclass("android.content.Context")
-                    PythonActivity = autoclass("org.kivy.android.PythonActivity")
-                    self._camera_manager = PythonActivity.mActivity.getSystemService(
-                        Context.CAMERA_SERVICE
-                    )
-                self._camera_manager.setTorchMode(self._camera_id, bool(turn_on))
-                return
-            except Exception as exc:
-                log.error(f"Camera2 set_flash: {exc}")
         # Camera1: flash mode
         if self._camera_method == "camera1" and self._camera1 is not None:
             try:
@@ -375,4 +399,11 @@ class AndroidCameraBridge:
                 return
             except Exception as exc:
                 log.error(f"Camera1 set_flash: {exc}")
+        # Camera2: torch mode
+        if self._camera_method == "camera2" and self._camera_manager is not None:
+            try:
+                self._camera_manager.setTorchMode(self._camera_id, bool(turn_on))
+                return
+            except Exception as exc:
+                log.error(f"Camera2 set_flash: {exc}")
         log.warning(f"set_flash: no active camera ({self._camera_method})")
