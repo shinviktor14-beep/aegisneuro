@@ -108,6 +108,8 @@ class AegisNeuroMobileScreen(MDScreen):
         self.gender_profile = "male"
         self.scan_timer = 0
         self.is_scanning = False
+        self.is_preparing_scan = False
+        self.prepare_scan_attempts = 0
 
         self.audio_engine.start_tone()
         self.build_ui()
@@ -456,6 +458,8 @@ class AegisNeuroMobileScreen(MDScreen):
 
     def _tick_ppg(self, dt):
         """30 раз в секунду: забираем у камеры последнее «среднее красное» и скармливаем в PPG."""
+        if not self.is_scanning:
+            return
         try:
             mean_red = self.camera_bridge.get_mean_red()
         except Exception:
@@ -467,24 +471,6 @@ class AegisNeuroMobileScreen(MDScreen):
         except Exception as exc:
             print(f"[Aegis-PPG tick] {exc}")
 
-    def _ensure_camera_ready(self, force_restart: bool = False) -> bool:
-        if force_restart:
-            try:
-                self.camera_bridge.stop_capture()
-            except Exception as exc:
-                print(f"[Aegis-Camera] restart stop: {exc}")
-
-        if not self.camera_bridge.is_ready():
-            self.status_card.md_bg_color = [0.06, 0.14, 0.22, 1]
-            self.status_label.text = "Подготовка камеры..."
-            self.status_detail_label.text = "Открываем камеру и включаем фонарик"
-            try:
-                self.camera_bridge.start_capture()
-            except Exception as exc:
-                print(f"[Aegis-Camera] start_capture: {exc}")
-
-        return self.camera_bridge.is_ready()
-
     def _show_camera_not_ready(self):
         self.status_card.md_bg_color = [0.35, 0.12, 0.12, 1]
         self.status_label.text = "⚠️ Камера не готова"
@@ -492,39 +478,70 @@ class AegisNeuroMobileScreen(MDScreen):
             f"{self.camera_bridge.get_status_text()}\n"
             "Подождите или перезапустите приложение"
         )
+        self.action_btn.disabled = False
+        self.action_btn.md_bg_color = [0, 0.78, 0.35, 1]
+        self.action_btn.text = "ЗАПУСТИТЬ ЗАМЕР"
+        self.is_preparing_scan = False
+        self.hardware_bridge.set_flashlight(turn_on=False)
+        self.camera_bridge.stop_capture()
 
     def start_scan(self, *args):
-        if self.is_scanning:
+        if self.is_scanning or self.is_preparing_scan:
             return
 
-        if not self._ensure_camera_ready():
+        self.is_preparing_scan = True
+        self.prepare_scan_attempts = 0
+        self.action_btn.disabled = True
+        self.action_btn.md_bg_color = [0.3, 0.3, 0.3, 1]
+        self.action_btn.text = "ГОТОВИМ КАМЕРУ..."
+        self.status_card.md_bg_color = [0.06, 0.14, 0.22, 1]
+        self.status_label.text = "Подготовка камеры..."
+        self.status_detail_label.text = "Камера и фонарик включатся только на время диагностики"
+
+        try:
+            self.camera_bridge.stop_capture()
+            self.camera_bridge.start_capture()
+        except Exception as exc:
+            print(f"[Aegis-Camera] start_scan: {exc}")
+
+        Clock.schedule_interval(self._finish_scan_preparation, 0.2)
+
+    def _finish_scan_preparation(self, dt):
+        if not self.is_preparing_scan:
+            return False
+
+        self.prepare_scan_attempts += 1
+        if not self.camera_bridge.is_ready():
+            if self.prepare_scan_attempts < 25:
+                self.status_detail_label.text = (
+                    f"Открываем камеру... {self.prepare_scan_attempts}"
+                )
+                return True
             self._show_camera_not_ready()
-            return
+            return False
 
         self.ppg_processor.red_values.clear()
         self.ppg_processor.timestamps.clear()
         if not self.hardware_bridge.set_flashlight(turn_on=True):
-            if not self._ensure_camera_ready(force_restart=True):
-                self._show_camera_not_ready()
-                return
-            if not self.hardware_bridge.set_flashlight(turn_on=True):
-                self._show_camera_not_ready()
-                return
+            self._show_camera_not_ready()
+            return False
 
         self.scan_timer = 15
         self.is_scanning = True
+        self.is_preparing_scan = False
 
         self.status_card.md_bg_color = [0.06, 0.14, 0.22, 1]
         self.status_label.text = "Идёт замер..."
         self.status_detail_label.text = "Удерживайте палец неподвижно на камере"
 
-        self.action_btn.disabled = True
-        self.action_btn.md_bg_color = [0.3, 0.3, 0.3, 1]
         self.action_btn.text = "ИДЁТ ЗАМЕР..."
+        return False
 
     def on_scan_complete(self):
         self.hardware_bridge.set_flashlight(turn_on=False)
         self.is_scanning = False
+        self.is_preparing_scan = False
+        self.camera_bridge.stop_capture()
 
         self.action_btn.disabled = False
         self.action_btn.md_bg_color = [0, 0.78, 0.35, 1]
@@ -632,20 +649,16 @@ class AegisNeuroMobileApp(MDApp):
         return AegisNeuroMobileScreen()
 
     def on_start(self):
-        """Вызывается когда Activity создана — безопасно открывать камеру."""
-        screen = self.root
-        if screen is not None and hasattr(screen, 'camera_bridge'):
-            screen.camera_bridge.start_capture()
+        """Activity создана. Камеру не открываем до старта диагностики."""
 
     def on_resume(self):
-        screen = self.root
-        if screen is not None and hasattr(screen, 'camera_bridge'):
-            screen.camera_bridge.start_capture()
+        """После разблокировки камера остается выключенной до диагностики."""
 
     def on_pause(self):
         screen = self.root
         if screen is not None and hasattr(screen, 'camera_bridge'):
             screen.is_scanning = False
+            screen.is_preparing_scan = False
             screen.scan_timer = 0
             screen.hardware_bridge.set_flashlight(turn_on=False)
             screen.camera_bridge.stop_capture()

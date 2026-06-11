@@ -160,9 +160,7 @@ class AndroidCameraBridge:
                         break
             flash_modes = params.getSupportedFlashModes()
             self._has_flash = flash_modes is not None and len(flash_modes) > 0
-            if self._has_flash and "torch" in flash_modes:
-                params.setFlashMode("torch")
-            else:
+            if self._has_flash and "off" in flash_modes:
                 params.setFlashMode("off")
             self._camera1.setParameters(params)
 
@@ -371,11 +369,6 @@ class AndroidCameraBridge:
                                     session.setRepeatingRequest(request, None, bridge._handler)
                                     bridge._session = session
                                     bridge._running = True
-                                    try:
-                                        if bridge._has_flash:
-                                            bridge._camera_manager.setTorchMode(bridge._camera_id, True)
-                                    except Exception as exc:
-                                        log.error(f"Camera2 torch: {exc}")
                                     log.info("Camera2 streaming")
                                 except Exception as exc:
                                     log.error(f"Camera2 repeat: {exc}")
