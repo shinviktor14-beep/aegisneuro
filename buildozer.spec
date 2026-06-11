@@ -28,7 +28,7 @@ orientation = portrait
 # Android API
 android.api = 33
 android.minapi = 24
-android.ndk_api = 21
+android.ndk_api = 24
 # Принудительно просим buildozer через sdkmanager поставить build-tools.
 # Иначе он ищет tools/bin/sdkmanager (устаревший путь) и падает.
 android.sdk = 33
