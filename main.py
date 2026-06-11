@@ -15,9 +15,12 @@ import random
 
 # Импортируем ядра из пакета aegis
 from aegis.core import AegisRLBrain, StormPredictor
+from aegis.update_checker import check_for_update
 from aegis_ppg_processor import AegisPPGProcessor
 from aegis_audio_engine import AegisAudioEngine
 from android_camera import AndroidCameraBridge
+
+APP_VERSION = "1.0.0"
 
 
 # ==============================================================================
@@ -101,7 +104,7 @@ class AegisNeuroMobileScreen(MDScreen):
             height=dp(44),
         )
         title_label_sub = MDLabel(
-            text="Система нейрорегуляции v1.0",
+            text=f"Система нейрорегуляции v{APP_VERSION}",
             halign="center",
             font_style="Caption",
             theme_text_color="Custom",
@@ -112,6 +115,37 @@ class AegisNeuroMobileScreen(MDScreen):
         title_card.add_widget(self.title_label)
         title_card.add_widget(title_label_sub)
         content.add_widget(title_card)
+
+        # ── Баннер обновления (скрыт по умолчанию) ──
+        self.update_banner = MDCard(
+            orientation='horizontal',
+            padding=[dp(16), dp(10)],
+            spacing=dp(12),
+            size_hint_y=None,
+            radius=[dp(12)],
+            md_bg_color=[0.12, 0.18, 0.08, 1],
+            elevation=2,
+            opacity=0,
+            height=0,
+        )
+        self.update_banner_label = MDLabel(
+            text="",
+            halign="left",
+            font_style="Body2",
+            theme_text_color="Custom",
+            text_color=[0.6, 0.9, 0.4, 1],
+            size_hint_x=0.7,
+        )
+        self.update_download_btn = MDRaisedButton(
+            text="Обновить",
+            md_bg_color=[0.2, 0.7, 0.3, 1],
+            size_hint_x=0.3,
+            on_release=self._open_update_url,
+        )
+        self.update_banner.add_widget(self.update_banner_label)
+        self.update_banner.add_widget(self.update_download_btn)
+        content.add_widget(self.update_banner)
+        self._update_url = None
 
         # ── 2. Карточка статуса ──
         self.status_card = MDCard(
@@ -355,6 +389,7 @@ class AegisNeuroMobileScreen(MDScreen):
         # ── Фоновые задачи ──
         Clock.schedule_interval(self.mobile_lifecycle_loop, 1.0)
         Clock.schedule_interval(self._tick_ppg, 1.0 / 30.0)
+        Clock.schedule_once(self._check_for_update, 3.0)
 
     # ── Обновление цвета метрик в зависимости от значений ──
     def _update_metric_colors(self):
@@ -484,6 +519,28 @@ class AegisNeuroMobileScreen(MDScreen):
             return
 
         self._update_metric_display()
+
+    def _check_for_update(self, dt=None):
+        """Фоновая проверка обновлений через GitHub Releases."""
+        try:
+            result = check_for_update(APP_VERSION)
+            if result is not None:
+                self._update_url = result.get("apk_url")
+                tag = result.get("tag", "?")
+                self.update_banner_label.text = f"🔄 Доступно обновление {tag}"
+                self.update_banner.opacity = 1
+                self.update_banner.height = dp(56)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _open_update_url(self, instance):
+        """Открыть URL скачивания APK в браузере."""
+        if self._update_url:
+            try:
+                import webbrowser
+                webbrowser.open(self._update_url)
+            except Exception:  # noqa: BLE001
+                pass
 
 
 class AegisNeuroMobileApp(MDApp):
