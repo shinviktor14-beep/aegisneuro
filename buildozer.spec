@@ -39,7 +39,7 @@ android.archs = arm64-v8a
 android.accept_sdk_licenses = True
 
 # Разрешения
-android.permissions = CAMERA,WAKE_LOCK,MODIFY_AUDIO_SETTINGS,BLUETOOTH,BLUETOOTH_ADMIN,BLUETOOTH_SCAN,BLUETOOTH_CONNECT,ACCESS_FINE_LOCATION
+android.permissions = CAMERA,WAKE_LOCK,MODIFY_AUDIO_SETTINGS,BLUETOOTH,BLUETOOTH_ADMIN,BLUETOOTH_SCAN,BLUETOOTH_CONNECT,ACCESS_FINE_LOCATION,WRITE_EXTERNAL_STORAGE
 android.meta_data = com.google.android.gms.version=0
 
 # Зависимости для сборки

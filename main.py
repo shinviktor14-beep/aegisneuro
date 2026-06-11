@@ -12,6 +12,27 @@ from kivy.metrics import dp
 
 import math
 import random
+import logging
+import os
+import sys
+
+# ── Логирование в файл на Android ──
+if platform == "android":
+    from jnius import autoclass
+    Environment = autoclass("android.os.Environment")
+    log_dir = Environment.getExternalStorageDirectory().getAbsolutePath()
+    log_path = os.path.join(log_dir, "aegis_debug.log")
+else:
+    log_path = "/tmp/aegis_debug.log"
+
+file_handler = logging.FileHandler(log_path, mode="w", encoding="utf-8")
+file_handler.setLevel(logging.DEBUG)
+file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+logging.root.addHandler(file_handler)
+logging.root.setLevel(logging.DEBUG)
+
+log = logging.getLogger("aegis")
+log.info(f"=== AegisNeuro started === platform={platform} log_path={log_path}")
 
 # Импортируем ядра из пакета aegis
 from aegis.core import AegisRLBrain, StormPredictor
