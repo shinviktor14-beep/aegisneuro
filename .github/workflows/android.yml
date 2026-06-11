@@ -13,6 +13,8 @@ jobs:
     name: Test (pytest)
     runs-on: ubuntu-22.04
     timeout-minutes: 10
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -24,13 +26,15 @@ jobs:
           pip install numpy pytest pytest-cov
       - name: Run tests
         run: |
-          python -m pytest tests/ -v --tb=short --cov=aegis/core --cov-report=term-missing
+          pip install -e .
+          python -m pytest tests/ -v --tb=short --cov=aegis --cov-report=term-missing
       - name: Upload coverage
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
           path: .coverage
+          if-no-files-found: ignore
           retention-days: 7
 
   # ── Android APK ───────────────────────────────────────────────────
@@ -39,6 +43,8 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 90
     needs: test
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     steps:
       - uses: actions/checkout@v4
 
