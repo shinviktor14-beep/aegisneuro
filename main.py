@@ -52,7 +52,6 @@ class AegisNeuroMobileScreen(MDScreen):
         self.audio_engine = AegisAudioEngine()
         self.camera_bridge = AndroidCameraBridge()
         self.camera_bridge.request_permission()
-        self.camera_bridge.start_capture()
         self.hardware_bridge = AndroidHardwareBridge(self.camera_bridge)
         self.predictor = StormPredictor()
 
@@ -554,6 +553,12 @@ class AegisNeuroMobileApp(MDApp):
         self.theme_cls.theme_style = "Dark"
         self.theme_cls.primary_palette = "Teal"
         return AegisNeuroMobileScreen()
+
+    def on_start(self):
+        """Вызывается когда Activity создана — безопасно открывать камеру."""
+        screen = self.root
+        if screen is not None and hasattr(screen, 'camera_bridge'):
+            screen.camera_bridge.start_capture()
 
     def on_stop(self):
         screen = self.root
