@@ -156,7 +156,7 @@ class AndroidCameraBridge:
                     if m in focus_modes:
                         params.setFocusMode(m)
                         break
-            params.setFlashMode(Camera.Parameters.FLASH_MODE_OFF)
+            params.setFlashMode("off")
             self._camera1.setParameters(params)
 
             flash_modes = params.getSupportedFlashModes()
@@ -261,6 +261,7 @@ class AndroidCameraBridge:
             CameraManager = autoclass("android.hardware.camera2.CameraManager")
             CameraCharacteristics = autoclass("android.hardware.camera2.CameraCharacteristics")
             ImageReader = autoclass("android.media.ImageReader")
+            ImageFormat = autoclass("android.graphics.ImageFormat")
             HandlerThread = autoclass("android.os.HandlerThread")
             PythonActivity = autoclass("org.kivy.android.PythonActivity")
             activity = PythonActivity.mActivity
@@ -270,7 +271,7 @@ class AndroidCameraBridge:
 
             self._camera_manager = activity.getSystemService(Context.CAMERA_SERVICE)
             w, h = target_resolution
-            self._reader = ImageReader.newInstance(w, h, ImageReader.YUV_420_888, 2)
+            self._reader = ImageReader.newInstance(w, h, ImageFormat.YUV_420_888, 2)
 
             self._handler_thread = HandlerThread("AegisCam2")
             self._handler_thread.start()
@@ -417,13 +418,11 @@ class AndroidCameraBridge:
             return
         if self._camera_method == "camera1" and self._camera1 is not None:
             try:
-                from jnius import autoclass
-                Camera = autoclass("android.hardware.Camera")
                 params = self._camera1.getParameters()
                 if turn_on and self._has_flash:
-                    params.setFlashMode(Camera.Parameters.FLASH_MODE_TORCH)
+                    params.setFlashMode("torch")
                 else:
-                    params.setFlashMode(Camera.Parameters.FLASH_MODE_OFF)
+                    params.setFlashMode("off")
                 self._camera1.setParameters(params)
             except Exception as exc:
                 log.error(f"Camera1 flash: {exc}")
