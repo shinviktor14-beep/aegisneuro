@@ -1,6 +1,10 @@
+import logging
+
 import numpy as np
 import pyaudio
 import math
+
+log = logging.getLogger(__name__)
 
 class AegisSpatialAudioEngine:
     def __init__(self, sample_rate=44100):
@@ -18,7 +22,7 @@ class AegisSpatialAudioEngine:
         
         # Текущий угол источника звука вокруг головы (в радианах)
         self.current_angle = 0.0 
-        print("[Aegis-Audio3D] Пространственный HRTF-движок успешно инициализирован.")
+        log.info("Пространственный HRTF-движок успешно инициализирован.")
 
     def generate_spatial_chunk(self, target_brain_freq, base_freq=150.0, chunk_size=1024, rotation_speed=0.02):
         """
@@ -66,8 +70,8 @@ class AegisSpatialAudioEngine:
 
     def play_test_session(self, duration_sec=10, target_brain_freq=7.83):
         """Тестовый запуск пространственного вращения частоты резонанса Шумана"""
-        print(f"\n🎧=== ТЕСТ 3D-ЗВУКА AEGISNEURO ({target_brain_freq} Гц) ===")
-        print("НАДЕНЬТЕ НАУШНИКИ! Вы должны почувствовать, как космический эмбиент плавно летает вокруг головы.")
+        log.info(f"ТЕСТ 3D-ЗВУКА AEGISNEURO ({target_brain_freq} Гц)")
+        log.info("НАДЕНЬТЕ НАУШНИКИ! Вы должны почувствовать, как космический эмбиент плавно летает вокруг головы.")
         
         chunks_needed = int(duration_sec * self.sample_rate / 1024)
         
@@ -88,7 +92,7 @@ class AegisSpatialAudioEngine:
         self.stream.stop_stream()
         self.stream.close()
         self.p.terminate()
-        print("[Aegis-Audio3D] Аудиопоток успешно остановлен.")
+        log.info("Аудиопоток успешно остановлен.")
 
 if __name__ == "__main__":
     # Запуск 10-секундного теста. Частота 7.83 Гц (глубокая релаксация и медитация)

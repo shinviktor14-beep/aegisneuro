@@ -1,3 +1,7 @@
+import logging
+
+log = logging.getLogger(__name__)
+
 class AegisMarketplace:
     def __init__(self):
         # Твои реферальные теги Amazon Associates (заменятся на реальные при регистрации)

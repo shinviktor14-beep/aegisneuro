@@ -1,4 +1,4 @@
-# buildozer.spec — конфигурация сборки AegisNeuro в Android APK
+# buildozer.spec — конфигурация сборки AegisNeuro в Android APK/AAB
 # Генерируется автоматически; правьте при необходимости.
 
 [app]
@@ -10,7 +10,7 @@ package.domain = org.aegisneuro
 # Источник
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,json
-source.exclude_patterns = .git,__pycache__,*.pyc,*.pyo,*.swp,.buildozer,bin,data,*.md,__pycache__/*,aegis/*
+source.exclude_patterns = .git,__pycache__,*.pyc,*.pyo,*.swp,.buildozer,bin,*.md,__pycache__/*
 
 # Версия
 version = 1.0.0
@@ -39,11 +39,19 @@ android.archs = arm64-v8a
 android.accept_sdk_licenses = True
 
 # Разрешения
-android.permissions = CAMERA,WAKE_LOCK,MODIFY_AUDIO_SETTINGS
+android.permissions = CAMERA,WAKE_LOCK,MODIFY_AUDIO_SETTINGS,BLUETOOTH,BLUETOOTH_ADMIN,BLUETOOTH_SCAN,BLUETOOTH_CONNECT,ACCESS_FINE_LOCATION
 android.meta_data = com.google.android.gms.version=0
 
 # Зависимости для сборки
 requirements = python3,kivy==2.3.0,numpy,pyjnius,kivymd
+
+# Signing (release) — ключи задаются через env vars:
+#   AEGIS_KEYSTORE=/path/to/release.keystore
+#   AEGIS_KEYSTORE_PASS=***
+#   AEGIS_KEY_ALIAS=release
+#   AEGIS_KEY_PASS=***
+# Если vars не заданы — собирается debug (без подписи).
+#android.release.artifact = aab
 
 [buildozer]
 log_level = 2

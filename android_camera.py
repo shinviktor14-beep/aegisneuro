@@ -13,14 +13,18 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from typing import Optional
+
+log = logging.getLogger(__name__)
 
 try:
     from kivy.utils import platform as _kivy_platform
     IS_ANDROID = (_kivy_platform == "android")
 except Exception:  # noqa: BLE001
+    log.debug("Kivy platform detection failed, assuming non-Android")
     IS_ANDROID = False
 
 
@@ -64,12 +68,12 @@ class AndroidCameraBridge:
                 # 0x00000001 = REQUEST_PERMISSIONS, даём системе ~1 сек на показ диалога
                 time.sleep(1.0)
         except Exception as exc:  # noqa: BLE001
-            print(f"[Aegis-Camera] permission request failed: {exc}")
+            log.error(f"permission request failed: {exc}")
 
     def start_capture(self, target_resolution: tuple[int, int] = (640, 480)) -> bool:
         """Открыть камеру и начать читать кадры. Возвращает True при успехе."""
         if not self.is_android:
-            print("[Aegis-Camera] start_capture: desktop fallback (no-op).")
+            log.info("start_capture: desktop fallback (no-op).")
             return False
         if self._running:
             return True
@@ -149,7 +153,7 @@ class AndroidCameraBridge:
                             bridge_ref._latest_mean_red = float(red_value)
                         image.close()
                     except Exception as exc:  # noqa: BLE001
-                        print(f"[Aegis-Camera] frame error: {exc}")
+                        log.error(f"frame error: {exc}")
 
             self._reader.setOnImageAvailableListener(_Listener(), self._handler)
 
@@ -176,10 +180,10 @@ class AndroidCameraBridge:
             self._has_flash = bool(
                 chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE)
             ) if False else True  # не критично, фонарик проверяем в set_flash
-            print(f"[Aegis-Camera] camera {self._camera_id} opened, resolution {w}x{h}")
+            log.info(f"camera {self._camera_id} opened, resolution {w}x{h}")
             return True
         except Exception as exc:  # noqa: BLE001
-            print(f"[Aegis-Camera] start_capture failed: {exc}")
+            log.error(f"start_capture failed: {exc}")
             self.is_android = False  # откатываемся в fallback-режим
             return False
 
@@ -213,26 +217,26 @@ class AndroidCameraBridge:
                                 try:
                                     session.setRepeatingRequest(request, None, None)
                                 except Exception as exc:  # noqa: BLE001
-                                    print(f"[Aegis-Camera] repeating request: {exc}")
+                                    log.error(f"repeating request: {exc}")
 
                             def onConfigureFailed(self, session):  # noqa: N802
-                                print("[Aegis-Camera] session configure failed")
+                                log.error("session configure failed")
 
                         camera.createCaptureSession(
                             [reader_surface], _SessionCb(), None
                         )
                     except Exception as exc:  # noqa: BLE001
-                        print(f"[Aegis-Camera] onOpened: {exc}")
+                        log.error(f"onOpened: {exc}")
 
                 def onError(self, camera, error):  # noqa: N802
-                    print(f"[Aegis-Camera] device error: {error}")
+                    log.error(f"device error: {error}")
 
             # Переоткрываем камеру с правильным callback
             self._camera = self._camera_manager.openCamera(
                 self._camera_id, _CamCallback(), None
             )
         except Exception as exc:  # noqa: BLE001
-            print(f"[Aegis-Camera] _open_session: {exc}")
+            log.error(f"_open_session: {exc}")
 
     def stop_capture(self) -> None:
         """Закрыть камеру и фоновый поток."""
@@ -251,7 +255,7 @@ class AndroidCameraBridge:
                 self._handler_thread.quit()
                 self._handler_thread = None
         except Exception as exc:  # noqa: BLE001
-            print(f"[Aegis-Camera] stop_capture: {exc}")
+            log.error(f"stop_capture: {exc}")
 
     def get_mean_red(self) -> float:
         """Последний сэмпл «среднего красного» из камеры (или 0, если кадров ещё нет)."""
@@ -259,9 +263,9 @@ class AndroidCameraBridge:
             return self._latest_mean_red
 
     def set_flash(self, turn_on: bool) -> None:
-        """Включить/выключить фонарик. На десктопе — print."""
+        """Включить/выключить фонарик. На десктопе — логируется."""
         if not self.is_android:
-            print(f"[Aegis-Hardware] Фонарик: {'ВКЛ' if turn_on else 'ВЫКЛ'} (desktop stub)")
+            log.info(f"Фонарик: {'ВКЛ' if turn_on else 'ВЫКЛ'} (desktop stub)")
             return
         try:
             from jnius import autoclass  # type: ignore
@@ -274,4 +278,4 @@ class AndroidCameraBridge:
                 )
             self._camera_manager.setTorchMode(self._camera_id, bool(turn_on))
         except Exception as exc:  # noqa: BLE001
-            print(f"[Aegis-Hardware] set_flash: {exc}")
+            log.error(f"set_flash: {exc}")

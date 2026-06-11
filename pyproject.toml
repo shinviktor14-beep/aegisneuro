@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aegisneuro"
+version = "1.0.0"
+description = "Closed-loop neuroregulation system with RL brain, storm predictor, and biofeedback"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    { name = "AegisNeuro Team" },
+]
+
+dependencies = [
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+desktop = [
+    "brainflow>=0.5",
+    "pyttsx3>=2.90",
+    "matplotlib>=3.7",
+]
+android = [
+    "kivy==2.3.0",
+    "kivymd>=1.1.1",
+    "pyjnius",
+    "pyttsx3>=2.90",
+]
+ble = [
+    "bleak>=0.21",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["aegis"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 99
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true

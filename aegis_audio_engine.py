@@ -13,16 +13,20 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from typing import Optional
 
 import numpy as np
 
+log = logging.getLogger(__name__)
+
 try:
     from kivy.utils import platform as _kivy_platform
     IS_ANDROID = (_kivy_platform == "android")
 except Exception:  # noqa: BLE001
+    log.debug("Kivy platform detection failed, assuming non-Android")
     IS_ANDROID = False
 
 
@@ -47,7 +51,7 @@ class AegisAudioEngine:
     def set_frequency(self, target_freq: float) -> None:
         """Динамическое изменение терапевтической частоты ИИ прямо во время звучания."""
         self.binaural_beat = float(target_freq)
-        print(f"[Aegis-Audio] Частота бинаурального стимула перестроена на: {self.binaural_beat} Гц")
+        log.info(f"Частота бинаурального стимула перестроена на: {self.binaural_beat} Гц")
 
     def start_tone(self) -> None:
         if self.is_playing:
@@ -56,7 +60,7 @@ class AegisAudioEngine:
         self.is_playing = True
         self.thread = threading.Thread(target=self._loop, daemon=True)
         self.thread.start()
-        print("[Aegis-Audio] Биорезонансный аудио-контур запущен.")
+        log.info("Биорезонансный аудио-контур запущен.")
 
     def stop_tone(self) -> None:
         self.is_running = False
@@ -66,7 +70,7 @@ class AegisAudioEngine:
             self.thread.join(timeout=1.0)
             self.thread = None
         self._close_native()
-        print("[Aegis-Audio] Звуковой поток отключен.")
+        log.info("Звуковой поток отключен.")
 
     # -------------------------------------------------------- внутреннее
     def _loop(self) -> None:
@@ -99,12 +103,12 @@ class AegisAudioEngine:
                 AudioTrack.MODE_STREAM,
             )
             if self._audio_track.getState() != AudioTrack.STATE_INITIALIZED:
-                print("[Aegis-Audio] AudioTrack not initialized")
+                log.error("AudioTrack not initialized")
                 return False
             self._audio_track.play()
             return True
         except Exception as exc:  # noqa: BLE001
-            print(f"[Aegis-Audio] open_android_track: {exc}")
+            log.error(f"open_android_track: {exc}")
             return False
 
     def _close_native(self) -> None:
@@ -114,19 +118,19 @@ class AegisAudioEngine:
                 self._audio_track.release()
                 self._audio_track = None
         except Exception:  # noqa: BLE001
-            pass
+            log.debug("close_native: audio_track cleanup error", exc_info=True)
         try:
             if self._stream is not None:
                 self._stream.stop_stream()
                 self._stream.close()
                 self._stream = None
         except Exception:  # noqa: BLE001
-            pass
+            log.debug("close_native: stream cleanup error", exc_info=True)
         if self._p is not None:
             try:
                 self._p.terminate()
             except Exception:  # noqa: BLE001
-                pass
+                log.debug("close_native: pyaudio terminate error", exc_info=True)
             self._p = None
 
     def _loop_android(self) -> None:
@@ -150,7 +154,7 @@ class AegisAudioEngine:
                     self._audio_track.WRITE_BLOCKING,
                 )
             except Exception as exc:  # noqa: BLE001
-                print(f"[Aegis-Audio] write: {exc}")
+                log.error(f"write: {exc}")
                 break
             start_time += chunk_size / self.sample_rate
         self._close_native()
@@ -160,7 +164,7 @@ class AegisAudioEngine:
         try:
             import pyaudio  # type: ignore
         except Exception:  # noqa: BLE001
-            print("[Aegis-Audio] pyaudio недоступен; тон на десктопе не воспроизводится.")
+            log.warning("pyaudio недоступен; тон на десктопе не воспроизводится.")
             # Просто «спим», чтобы set_frequency не упал
             while self.is_running:
                 time.sleep(0.1)
@@ -176,7 +180,7 @@ class AegisAudioEngine:
                 frames_per_buffer=1024,
             )
         except Exception as exc:  # noqa: BLE001
-            print(f"[Aegis-Audio] pyaudio open: {exc}")
+            log.error(f"pyaudio open: {exc}")
             return
 
         chunk_size = 1024
@@ -193,6 +197,7 @@ class AegisAudioEngine:
             try:
                 self._stream.write(stereo.tobytes())
             except Exception:  # noqa: BLE001
+                log.debug("stream write error, stopping desktop loop", exc_info=True)
                 break
             start_time += chunk_size / self.sample_rate
         self._close_native()

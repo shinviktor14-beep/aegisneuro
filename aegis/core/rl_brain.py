@@ -74,7 +74,30 @@ class AegisRLBrain:
             json.dump(data, f, ensure_ascii=False)
 
     def load_profile(self) -> None:
-        if self.profile_path.exists():
+        if not self.profile_path.exists():
+            return
+        try:
             with open(self.profile_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            self.q_table = np.array(data["q_table"])
+            loaded_table = np.array(data["q_table"])
+            # Валидация: размерность должна совпадать
+            if loaded_table.shape != (self.num_states, len(self.actions)):
+                import logging
+                log = logging.getLogger(__name__)
+                log.warning(
+                    "Q-table shape mismatch: expected %s, got %s — resetting",
+                    (self.num_states, len(self.actions)),
+                    loaded_table.shape,
+                )
+                return
+            # Валидация: нет NaN / Inf
+            if not np.all(np.isfinite(loaded_table)):
+                import logging
+                log = logging.getLogger(__name__)
+                log.warning("Q-table contains NaN/Inf — resetting")
+                return
+            self.q_table = loaded_table
+        except (json.JSONDecodeError, KeyError, OSError):
+            import logging
+            log = logging.getLogger(__name__)
+            log.warning("Corrupted brain profile — starting fresh")

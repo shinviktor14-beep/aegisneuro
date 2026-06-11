@@ -5,10 +5,14 @@
 
 from __future__ import annotations
 
+import os
+
 
 class AegisMarketplace:
-    def __init__(self, amazon_assoc_tag: str = "aegisneuro0c-20") -> None:
-        self.amazon_assoc_tag = amazon_assoc_tag
+    def __init__(self, amazon_assoc_tag: str | None = None) -> None:
+        self.amazon_assoc_tag = amazon_assoc_tag or os.environ.get(
+            "AEGIS_AMAZON_TAG", ""
+        )
         self.products: dict[str, dict] = {
             "polar_h10": {
                 "name": "Polar H10 Heart Rate Monitor",

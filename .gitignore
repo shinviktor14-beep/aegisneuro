@@ -11,6 +11,17 @@ __pycache__/
 *.pyd
 .Python
 *.egg-info/
+*.egg
+dist/
+build/
+eggs/
+.eggs/
+*.so
+
+# Virtual environments
+venv/
+.venv/
+env/
 
 # Buildozer
 .buildozer/
@@ -23,6 +34,13 @@ bin/
 *.swo
 .DS_Store
 Thumbs.db
+
+# Type checkers / linters
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+htmlcov/
+.coverage
 
 # Logs / OS
 *.log

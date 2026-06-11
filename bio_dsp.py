@@ -1,4 +1,8 @@
+import logging
+
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 class BioSignalProcessor:
     def __init__(self, window_size=120):
@@ -81,18 +85,18 @@ if __name__ == "__main__":
     dsp = BioSignalProcessor()
     
     # Сценарий 1: Эмуляция здорового, расслабленного сердца (высокая вариабельность)
-    print("=== Тест: Расслабленное состояние ===")
+    log.info("=== Тест: Расслабленное состояние ===")
     healthy_rr = [1000 + int(np.sin(i) * 50) + np.random.randint(-10, 10) for i in range(100)]
     for rr in healthy_rr:
         dsp.add_rr_interval(rr)
-    print(f"Блуждающий нерв (RMSSD): {dsp.calculate_rmssd()} ms (Норма > 40)")
-    print(f"Индекс стресса Баевского: {dsp.calculate_baevsky_stress_index()} у.е. (Норма 50-150)")
+    log.info(f"Блуждающий нерв (RMSSD): {dsp.calculate_rmssd()} ms (Норма > 40)")
+    log.info(f"Индекс стресса Баевского: {dsp.calculate_baevsky_stress_index()} у.е. (Норма 50-150)")
     
     # Сценарий 2: Эмуляция зажатого состояния / острой боли (пульс-метроном)
-    print("\n=== Тест: Острая мышечная боль ===")
+    log.info("=== Тест: Острая мышечная боль ===")
     dsp_stress = BioSignalProcessor()
     stressed_rr = [800 + np.random.randint(-3, 3) for i in range(100)] # Почти нет разброса
     for rr in stressed_rr:
         dsp_stress.add_rr_interval(rr)
-    print(f"Блуждающий нерв (RMSSD): {dsp_stress.calculate_rmssd()} ms (Критически мало)")
-    print(f"Индекс стресса Баевского: {dsp_stress.calculate_baevsky_stress_index()} у.е. (Жесткий стресс/спазм)")
+    log.info(f"Блуждающий нерв (RMSSD): {dsp_stress.calculate_rmssd()} ms (Критически мало)")
+    log.info(f"Индекс стресса Баевского: {dsp_stress.calculate_baevsky_stress_index()} у.е. (Жесткий стресс/спазм)")

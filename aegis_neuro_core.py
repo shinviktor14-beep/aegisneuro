@@ -1,3 +1,4 @@
+import logging
 import threading
 import queue
 import time
@@ -6,9 +7,11 @@ from bio_controller import BioFeedbackController
 from advanced_audio import AdvancedNeuroAudioEngine
 from ai_orchestrator import AICognitiveOrchestrator
 
+log = logging.getLogger(__name__)
+
 class AegisNeuroEngine:
     def __init__(self):
-        print("[System] Инициализация экосистемы AegisNeuro v1.0...")
+        log.info("Инициализация экосистемы AegisNeuro v1.0...")
         
         # Единая шина обмена данными (Data Broker)
         self.data_queue = queue.Queue()
@@ -23,7 +26,7 @@ class AegisNeuroEngine:
 
     def hardware_ingestion_layer(self):
         """[Слой 1] Имитация потока Polar H10 (заменяется на polar_ble.py)"""
-        print("[AegisNeuro -> Hardware] Поток сбора биоданных активен.")
+        log.info("Поток сбора биоданных активен.")
         while self.is_running:
             # Имитируем получение сырого R-R интервала от сердца в ms
             # В реальности данные будут лететь из BLE-нотификаций напрямую в DSP
@@ -37,7 +40,7 @@ class AegisNeuroEngine:
 
     def closed_loop_control_layer(self):
         """[Слой 2] Закрытый контур обратной связи AegisNeuro"""
-        print("[AegisNeuro -> AI Logic] Контур биорегуляции запущен.")
+        log.info("Контур биорегуляции запущен.")
         chunk_size = 1024
         current_freq = 10.0 # Базовая Альфа
         
@@ -75,7 +78,7 @@ class AegisNeuroEngine:
         try:
             self.audio_engine.stream.write(chunk)
         except Exception:
-            pass
+            log.debug("stream_write_safe: audio write failed", exc_info=True)
 
     def start_defense_session(self, duration=30):
         """Запуск защитной нейро-сессии AegisNeuro"""
@@ -84,9 +87,7 @@ class AegisNeuroEngine:
         self.t1 = threading.Thread(target=self.hardware_ingestion_layer, daemon=True)
         self.t2 = threading.Thread(target=self.closed_loop_control_layer, daemon=True)
         
-        print("\n==================================================")
-        print("    💥 ДОБРО ПОЖАЛОВАТЬ В AEGISNEURO OS v1.0 💥    ")
-        print("==================================================")
+        log.info("ДОБРО ПОЖАЛОВАТЬ В AEGISNEURO OS v1.0")
         
         self.t1.start()
         self.t2.start()
@@ -95,7 +96,7 @@ class AegisNeuroEngine:
         self.stop_session()
 
     def stop_session(self):
-        print("\n[System] Сессия AegisNeuro корректно завершена.")
+        log.info("Сессия AegisNeuro корректно завершена.")
         self.is_running = False
         self.audio_engine.speak_in_background("Сессия завершена. Ваш иммунный щит укреплен.")
         time.sleep(1.0)

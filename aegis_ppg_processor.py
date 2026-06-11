@@ -1,6 +1,10 @@
+import logging
+
 import numpy as np
 from datetime import datetime
 from collections import deque
+
+log = logging.getLogger(__name__)
 
 class AegisPPGProcessor:
     def __init__(self):
@@ -39,7 +43,7 @@ class AegisPPGProcessor:
         else:
             smooth_signal = raw_signal
 
-        # 2. Удаление низкочастотного тренда (дрейфа изолинии от дыхания/нажима)
+        # 2. Удаление низкочастотного тренда (дрейфа изолинии от дыхания/нажема)
         # Вычитаем локальное среднее, чтобы сигнал колебался строго вокруг нуля
         trend_window = 25  # Около 800 мс (средняя длина кардиоцикла)
         trend = np.convolve(smooth_signal, np.ones(trend_window)/trend_window, mode='same')
