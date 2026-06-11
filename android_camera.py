@@ -6,6 +6,7 @@ Camera1 (основной, надёжнее через pyjnius) → Camera2 (fal
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 
@@ -41,6 +42,11 @@ class AndroidCameraBridge:
         self._camera_manager = None
         self._preview_callback = None
         self._image_listener = None
+
+        self._debug_frame_dir = None
+        self._debug_frames_left = 0
+        self._debug_every_n_frames = 15
+        self._debug_last_saved_frame = 0
 
     # ── публичный API ──
     def request_permission(self) -> bool:
@@ -125,6 +131,50 @@ class AndroidCameraBridge:
         self._error_detail = f"Camera1: {err1} | Camera2: {err2}"
         return False
 
+    def enable_debug_frames(self, count: int = 5, every_n_frames: int = 15) -> str:
+        """Сохранить несколько preview-кадров в PGM для отладки PPG."""
+        self._debug_frame_dir = self._get_debug_frame_dir()
+        os.makedirs(self._debug_frame_dir, exist_ok=True)
+        self._debug_frames_left = max(0, int(count))
+        self._debug_every_n_frames = max(1, int(every_n_frames))
+        self._debug_last_saved_frame = 0
+        return self._debug_frame_dir
+
+    def _get_debug_frame_dir(self) -> str:
+        if self.is_android:
+            try:
+                from jnius import autoclass
+                PythonActivity = autoclass("org.kivy.android.PythonActivity")
+                activity = PythonActivity.mActivity
+                if activity is not None:
+                    ext_dir = activity.getExternalFilesDir(None)
+                    if ext_dir is not None:
+                        return os.path.join(ext_dir.getAbsolutePath(), "aegis_frames")
+                    return os.path.join(activity.getFilesDir().getAbsolutePath(), "aegis_frames")
+            except Exception as exc:
+                log.error(f"debug frame dir: {exc}")
+        return os.path.abspath("aegis_frames")
+
+    def _save_debug_pgm(self, data, width: int, height: int, label: str = "camera") -> None:
+        if self._debug_frames_left <= 0 or self._debug_frame_dir is None:
+            return
+        if self._frame_count - self._debug_last_saved_frame < self._debug_every_n_frames:
+            return
+        self._debug_last_saved_frame = self._frame_count
+        self._debug_frames_left -= 1
+
+        try:
+            y_size = width * height
+            frame = bytes((data[i] & 0xFF for i in range(y_size)))
+            filename = f"{label}_{int(time.time() * 1000)}_{width}x{height}.pgm"
+            path = os.path.join(self._debug_frame_dir, filename)
+            with open(path, "wb") as fh:
+                fh.write(f"P5\n{width} {height}\n255\n".encode("ascii"))
+                fh.write(frame)
+            log.info(f"Saved debug camera frame: {path}")
+        except Exception as exc:
+            log.error(f"save debug frame: {exc}")
+
     # ── Camera1 ──
     def _start_camera1(self, target_resolution: tuple = (640, 480)) -> bool:
         try:
@@ -195,6 +245,7 @@ class AndroidCameraBridge:
                             bridge_ref._frame_count += 1
                             if bridge_ref._frame_count >= 3:
                                 bridge_ref._ready = True
+                        bridge_ref._save_debug_pgm(data, final_w, final_h, "camera1")
                     except Exception as exc:
                         log.error(f"Camera1 frame: {exc}")
 

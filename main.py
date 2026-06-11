@@ -501,6 +501,8 @@ class AegisNeuroMobileScreen(MDScreen):
         try:
             self.camera_bridge.stop_capture()
             self.camera_bridge.start_capture()
+            debug_dir = self.camera_bridge.enable_debug_frames(count=5, every_n_frames=15)
+            print(f"[Aegis-Camera] debug frames: {debug_dir}")
         except Exception as exc:
             print(f"[Aegis-Camera] start_scan: {exc}")
 
