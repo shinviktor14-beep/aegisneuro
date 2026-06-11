@@ -430,14 +430,17 @@ class AndroidCameraBridge:
         self._handler_thread = None
         self._preview_callback = None
         self._image_listener = None
+        self._camera_method = "none"
+        self._latest_mean_red = 0.0
+        self._frame_count = 0
 
     def get_mean_red(self) -> float:
         with self._lock:
             return self._latest_mean_red
 
-    def set_flash(self, turn_on: bool) -> None:
+    def set_flash(self, turn_on: bool) -> bool:
         if not IS_ANDROID:
-            return
+            return False
         if self._camera_method == "camera1" and self._camera1 is not None:
             try:
                 params = self._camera1.getParameters()
@@ -446,10 +449,15 @@ class AndroidCameraBridge:
                 else:
                     params.setFlashMode("off")
                 self._camera1.setParameters(params)
+                return True
             except Exception as exc:
                 log.error(f"Camera1 flash: {exc}")
+                return False
         elif self._camera_method == "camera2" and self._camera_manager is not None:
             try:
                 self._camera_manager.setTorchMode(self._camera_id, bool(turn_on))
+                return True
             except Exception as exc:
                 log.error(f"Camera2 flash: {exc}")
+                return False
+        return False

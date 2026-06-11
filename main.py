@@ -75,11 +75,12 @@ class AndroidHardwareBridge:
     def __init__(self, camera_bridge: AndroidCameraBridge):
         self.camera_bridge = camera_bridge
 
-    def set_flashlight(self, turn_on: bool = True) -> None:
+    def set_flashlight(self, turn_on: bool = True) -> bool:
         try:
-            self.camera_bridge.set_flash(bool(turn_on))
+            return self.camera_bridge.set_flash(bool(turn_on))
         except Exception as exc:  # noqa: BLE001
             print(f"[Aegis-Hardware] set_flashlight: {exc}")
+            return False
 
 
 # ==============================================================================
@@ -466,16 +467,50 @@ class AegisNeuroMobileScreen(MDScreen):
         except Exception as exc:
             print(f"[Aegis-PPG tick] {exc}")
 
-    def start_scan(self, *args):
+    def _ensure_camera_ready(self, force_restart: bool = False) -> bool:
+        if force_restart:
+            try:
+                self.camera_bridge.stop_capture()
+            except Exception as exc:
+                print(f"[Aegis-Camera] restart stop: {exc}")
+
         if not self.camera_bridge.is_ready():
-            self.status_card.md_bg_color = [0.35, 0.12, 0.12, 1]
-            self.status_label.text = "⚠️ Камера не готова"
-            self.status_detail_label.text = f"{self.camera_bridge.get_status_text()}\nПодождите или перезапустите приложение"
+            self.status_card.md_bg_color = [0.06, 0.14, 0.22, 1]
+            self.status_label.text = "Подготовка камеры..."
+            self.status_detail_label.text = "Открываем камеру и включаем фонарик"
+            try:
+                self.camera_bridge.start_capture()
+            except Exception as exc:
+                print(f"[Aegis-Camera] start_capture: {exc}")
+
+        return self.camera_bridge.is_ready()
+
+    def _show_camera_not_ready(self):
+        self.status_card.md_bg_color = [0.35, 0.12, 0.12, 1]
+        self.status_label.text = "⚠️ Камера не готова"
+        self.status_detail_label.text = (
+            f"{self.camera_bridge.get_status_text()}\n"
+            "Подождите или перезапустите приложение"
+        )
+
+    def start_scan(self, *args):
+        if self.is_scanning:
+            return
+
+        if not self._ensure_camera_ready():
+            self._show_camera_not_ready()
             return
 
         self.ppg_processor.red_values.clear()
         self.ppg_processor.timestamps.clear()
-        self.hardware_bridge.set_flashlight(turn_on=True)
+        if not self.hardware_bridge.set_flashlight(turn_on=True):
+            if not self._ensure_camera_ready(force_restart=True):
+                self._show_camera_not_ready()
+                return
+            if not self.hardware_bridge.set_flashlight(turn_on=True):
+                self._show_camera_not_ready()
+                return
+
         self.scan_timer = 15
         self.is_scanning = True
 
@@ -601,6 +636,20 @@ class AegisNeuroMobileApp(MDApp):
         screen = self.root
         if screen is not None and hasattr(screen, 'camera_bridge'):
             screen.camera_bridge.start_capture()
+
+    def on_resume(self):
+        screen = self.root
+        if screen is not None and hasattr(screen, 'camera_bridge'):
+            screen.camera_bridge.start_capture()
+
+    def on_pause(self):
+        screen = self.root
+        if screen is not None and hasattr(screen, 'camera_bridge'):
+            screen.is_scanning = False
+            screen.scan_timer = 0
+            screen.hardware_bridge.set_flashlight(turn_on=False)
+            screen.camera_bridge.stop_capture()
+        return True
 
     def on_stop(self):
         screen = self.root
