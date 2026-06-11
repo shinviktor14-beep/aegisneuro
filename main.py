@@ -426,6 +426,12 @@ class AegisNeuroMobileScreen(MDScreen):
             print(f"[Aegis-PPG tick] {exc}")
 
     def start_scan(self, *args):
+        if not self.camera_bridge.is_ready():
+            self.status_card.md_bg_color = [0.35, 0.12, 0.12, 1]
+            self.status_label.text = "⚠️ Камера не готова"
+            self.status_detail_label.text = f"{self.camera_bridge.get_status_text()}\nПодождите или перезапустите приложение"
+            return
+
         self.ppg_processor.red_values.clear()
         self.ppg_processor.timestamps.clear()
         self.hardware_bridge.set_flashlight(turn_on=True)
