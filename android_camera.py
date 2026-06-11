@@ -8,7 +8,6 @@
   - умеет включать/выключать фонарик через CameraManager.setTorchMode.
 
 На не-Android (Windows/Linux/Mac) — безопасный fallback, методы — no-op.
-Тогда источником «красного» должен быть opencv-канал в верхнем слое.
 """
 
 from __future__ import annotations
@@ -57,15 +56,11 @@ class AndroidCameraBridge:
             from jnius import autoclass  # type: ignore
             PythonActivity = autoclass("org.kivy.android.PythonActivity")
             activity = PythonActivity.mActivity
-            Context = autoclass("android.content.Context")
             PackageManager = autoclass("android.content.pm.PackageManager")
             PERMISSION_CAMERA = autoclass("android.Manifest$permission").CAMERA
             granted = activity.checkSelfPermission(PERMISSION_CAMERA)
             if granted != PackageManager.PERMISSION_GRANTED:
-                # 0x00000001 = REQUEST_PERMISSIONS (новые Android-ы могут кинуть
-                # SecurityException, если окошко запрашивает разрешение из фона)
                 activity.requestPermissions([PERMISSION_CAMERA], 1)
-                # 0x00000001 = REQUEST_PERMISSIONS, даём системе ~1 сек на показ диалога
                 time.sleep(1.0)
         except Exception as exc:  # noqa: BLE001
             log.error(f"permission request failed: {exc}")
@@ -89,7 +84,6 @@ class AndroidCameraBridge:
 
             self._camera_manager = activity.getSystemService(Context.CAMERA_SERVICE)
             w, h = target_resolution
-            # newImageReader(width, height, format, maxImages)
             self._reader = ImageReader.newInstance(w, h, ImageReader.YUV_420_888, 2)
 
             # Читающий поток на отдельном HandlerThread
@@ -98,7 +92,7 @@ class AndroidCameraBridge:
             Handler = autoclass("android.os.Handler")
             self._handler = Handler(self._handler_thread.getLooper())
 
-            # Колбэк: OnImageAvailableListener (лямбда Java-интерфейс)
+            # Колбэк: OnImageAvailableListener
             OnImageAvailableListener = autoclass(
                 "android.media.ImageReader$OnImageAvailableListener"
             )
@@ -111,14 +105,11 @@ class AndroidCameraBridge:
                         if image is None:
                             return
                         planes = image.getPlanes()
-                        # planes[2] — Cr-плоскость в YUV_420_888 (U=1, V=2).
-                        # Cr кодирует «красноту» с обратным знаком — инвертируем.
                         cr_plane = planes[2]
                         buffer = cr_plane.getBuffer()
                         row_stride = cr_plane.getRowStride()
                         pixel_stride = cr_plane.getPixelStride()
                         data = bytes(buffer)
-                        # Центральная область 60% — самый стабильный PPG-сигнал
                         width = image.getWidth()
                         height = image.getHeight()
                         x0 = int(width * 0.2)
@@ -146,8 +137,6 @@ class AndroidCameraBridge:
                                 image.close()
                                 return
                             mean = total / n
-                        # 128 — нейтральный уровень Cr, >128 — холоднее, <128 — теплее.
-                        # Для PPG важна вариация, а не абсолют; нормируем к 0..255.
                         red_value = (128.0 - mean) + 128.0
                         with bridge_ref._lock:
                             bridge_ref._latest_mean_red = float(red_value)
@@ -157,86 +146,72 @@ class AndroidCameraBridge:
 
             self._reader.setOnImageAvailableListener(_Listener(), self._handler)
 
-            # Открываем заднюю камеру
+            # Ищем заднюю камеру
             camera_ids = list(self._camera_manager.getCameraIdList())
-            self._camera_id = camera_ids[0]
-            chars = self._camera_manager.getCameraCharacteristics(self._camera_id)
-            facing = chars.get(CameraCharacteristics.LENS_FACING)
-            LENS_FACING_BACK = CameraCharacteristics.LENS_FACING_BACK
-            # Если 0-я камера — фронталка, берём первую заднюю
+            self._camera_id = None
             for cid in camera_ids:
                 c = self._camera_manager.getCameraCharacteristics(str(cid))
-                if c.get(CameraCharacteristics.LENS_FACING) == LENS_FACING_BACK:
+                if c.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK:
                     self._camera_id = str(cid)
                     break
-            # del facing  # silence linter
+            if self._camera_id is None and camera_ids:
+                self._camera_id = str(camera_ids[0])
 
-            self._camera = self._camera_manager.openCamera(
-                self._camera_id, autoclass("android.hardware.camera2.CameraDevice$StateCallback")() if False else None
-            )
-            # Камера открыта; собираем CaptureRequest + CaptureSession в отдельном методе
-            self._open_session(w, h)
-            self._running = True
-            self._has_flash = bool(
-                chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE)
-            ) if False else True  # не критично, фонарик проверяем в set_flash
-            log.info(f"camera {self._camera_id} opened, resolution {w}x{h}")
-            return True
-        except Exception as exc:  # noqa: BLE001
-            log.error(f"start_capture failed: {exc}")
-            self.is_android = False  # откатываемся в fallback-режим
-            return False
+            chars = self._camera_manager.getCameraCharacteristics(self._camera_id)
+            self._has_flash = bool(chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE))
 
-    def _open_session(self, w: int, h: int) -> None:
-        """Открыть CameraCaptureSession и направить поток в ImageReader."""
-        try:
-            from jnius import autoclass  # type: ignore
-            Surface = autoclass("android.view.Surface")
-            reader_surface = self._reader.getSurface()
+            # Открываем камеру с правильным StateCallback
             CaptureRequest = autoclass("android.hardware.camera2.CaptureRequest")
             CameraDevice = autoclass("android.hardware.camera2.CameraDevice")
-
             StateCallback = autoclass("android.hardware.camera2.CameraDevice$StateCallback")
+            SessionCallback = autoclass(
+                "android.hardware.camera2.CameraCaptureSession$StateCallback"
+            )
+            reader_surface = self._reader.getSurface()
+
+            bridge = self
 
             class _CamCallback(StateCallback):
                 def onOpened(self, camera):  # noqa: N802
                     try:
                         builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
                         builder.addTarget(reader_surface)
-                        # AF off, AE on
                         builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
                         builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
                         request = builder.build()
 
-                        SessionCallback = autoclass(
-                            "android.hardware.camera2.CameraCaptureSession$StateCallback"
-                        )
-
                         class _SessionCb(SessionCallback):
                             def onConfigured(self, session):  # noqa: N802
                                 try:
-                                    session.setRepeatingRequest(request, None, None)
+                                    session.setRepeatingRequest(request, None, bridge._handler)
+                                    bridge._session = session
+                                    bridge._running = True
+                                    log.info("CameraCaptureSession configured, streaming frames")
                                 except Exception as exc:  # noqa: BLE001
                                     log.error(f"repeating request: {exc}")
 
                             def onConfigureFailed(self, session):  # noqa: N802
                                 log.error("session configure failed")
 
-                        camera.createCaptureSession(
-                            [reader_surface], _SessionCb(), None
-                        )
+                        camera.createCaptureSession([reader_surface], _SessionCb(), bridge._handler)
                     except Exception as exc:  # noqa: BLE001
                         log.error(f"onOpened: {exc}")
 
                 def onError(self, camera, error):  # noqa: N802
-                    log.error(f"device error: {error}")
+                    log.error(f"camera device error: {error}")
 
-            # Переоткрываем камеру с правильным callback
+                def onDisconnected(self, camera):  # noqa: N802
+                    log.warning("camera disconnected")
+
             self._camera = self._camera_manager.openCamera(
-                self._camera_id, _CamCallback(), None
+                self._camera_id, _CamCallback(), self._handler
             )
+            log.info(f"camera {self._camera_id} open requested, resolution {w}x{h}")
+            return True
         except Exception as exc:  # noqa: BLE001
-            log.error(f"_open_session: {exc}")
+            log.error(f"start_capture failed: {exc}")
+            self.is_android = False
+            return False
 
     def stop_capture(self) -> None:
         """Закрыть камеру и фоновый поток."""
@@ -269,7 +244,6 @@ class AndroidCameraBridge:
             return
         try:
             from jnius import autoclass  # type: ignore
-            # Получаем свежий manager (мог переинициализироваться)
             if self._camera_manager is None:
                 Context = autoclass("android.content.Context")
                 PythonActivity = autoclass("org.kivy.android.PythonActivity")
