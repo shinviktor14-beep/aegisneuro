@@ -125,6 +125,13 @@ jobs:
           pip install --upgrade pip setuptools wheel
           pip install buildozer cython
 
+      - name: Set version from run number
+        run: |
+          VERSION="1.0.${{ github.run_number }}"
+          echo "Setting version: $VERSION"
+          sed -i "s/^APP_VERSION = .*/APP_VERSION = \"$VERSION\"/" main.py
+          sed -i "s/^version = .*/version = $VERSION/" buildozer.spec
+
       - name: Verify environment
         run: |
           echo "=== buildozer version: $(buildozer --version 2>&1) ==="
