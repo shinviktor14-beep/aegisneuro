@@ -39,6 +39,8 @@ class AndroidCameraBridge:
         self._handler = None
         self._camera_id = None
         self._camera_manager = None
+        self._preview_callback = None
+        self._image_listener = None
 
     # ── публичный API ──
     def request_permission(self) -> bool:
@@ -126,7 +128,7 @@ class AndroidCameraBridge:
     # ── Camera1 ──
     def _start_camera1(self, target_resolution: tuple = (640, 480)) -> bool:
         try:
-            from jnius import autoclass
+            from jnius import PythonJavaClass, autoclass, java_method
             Camera = autoclass("android.hardware.Camera")
             bridge_ref = self
             w, h = target_resolution
@@ -162,11 +164,13 @@ class AndroidCameraBridge:
             flash_modes = params.getSupportedFlashModes()
             self._has_flash = flash_modes is not None and len(flash_modes) > 0
 
-            # Preview callback
-            PreviewCallback = autoclass("android.hardware.Camera$PreviewCallback")
             final_w, final_h = w, h
 
-            class _PreviewCb(PreviewCallback):
+            class _PreviewCb(PythonJavaClass):
+                __javainterfaces__ = ["android/hardware/Camera$PreviewCallback"]
+                __javacontext__ = "app"
+
+                @java_method("([BLandroid/hardware/Camera;)V")
                 def onPreviewFrame(self, data, camera):  # noqa: N802
                     try:
                         y_size = final_w * final_h
@@ -194,7 +198,8 @@ class AndroidCameraBridge:
                     except Exception as exc:
                         log.error(f"Camera1 frame: {exc}")
 
-            self._camera1.setPreviewCallback(_PreviewCb())
+            self._preview_callback = _PreviewCb()
+            self._camera1.setPreviewCallback(self._preview_callback)
 
             # Пробуем без SurfaceTexture (работает на большинстве устройств)
             try:
@@ -256,7 +261,7 @@ class AndroidCameraBridge:
     # ── Camera2 ──
     def _start_camera2(self, target_resolution: tuple = (640, 480)) -> bool:
         try:
-            from jnius import autoclass
+            from jnius import PythonJavaClass, autoclass, java_method
             Context = autoclass("android.content.Context")
             CameraManager = autoclass("android.hardware.camera2.CameraManager")
             CameraCharacteristics = autoclass("android.hardware.camera2.CameraCharacteristics")
@@ -278,10 +283,13 @@ class AndroidCameraBridge:
             Handler = autoclass("android.os.Handler")
             self._handler = Handler(self._handler_thread.getLooper())
 
-            OnImageAvailableListener = autoclass("android.media.ImageReader$OnImageAvailableListener")
             bridge_ref = self
 
-            class _Listener(OnImageAvailableListener):
+            class _Listener(PythonJavaClass):
+                __javainterfaces__ = ["android/media/ImageReader$OnImageAvailableListener"]
+                __javacontext__ = "app"
+
+                @java_method("(Landroid/media/ImageReader;)V")
                 def onImageAvailable(self, reader):  # noqa: N802
                     try:
                         image = reader.acquireLatestImage()
@@ -323,7 +331,8 @@ class AndroidCameraBridge:
                     except Exception as exc:
                         log.error(f"Camera2 frame: {exc}")
 
-            self._reader.setOnImageAvailableListener(_Listener(), self._handler)
+            self._image_listener = _Listener()
+            self._reader.setOnImageAvailableListener(self._image_listener, self._handler)
 
             camera_ids = list(self._camera_manager.getCameraIdList())
             self._camera_id = None
@@ -408,6 +417,8 @@ class AndroidCameraBridge:
         self._camera2 = None
         self._reader = None
         self._handler_thread = None
+        self._preview_callback = None
+        self._image_listener = None
 
     def get_mean_red(self) -> float:
         with self._lock:
