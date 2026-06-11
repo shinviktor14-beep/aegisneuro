@@ -158,11 +158,13 @@ class AndroidCameraBridge:
                     if m in focus_modes:
                         params.setFocusMode(m)
                         break
-            params.setFlashMode("off")
-            self._camera1.setParameters(params)
-
             flash_modes = params.getSupportedFlashModes()
             self._has_flash = flash_modes is not None and len(flash_modes) > 0
+            if self._has_flash and "torch" in flash_modes:
+                params.setFlashMode("torch")
+            else:
+                params.setFlashMode("off")
+            self._camera1.setParameters(params)
 
             final_w, final_h = w, h
 
@@ -369,6 +371,11 @@ class AndroidCameraBridge:
                                     session.setRepeatingRequest(request, None, bridge._handler)
                                     bridge._session = session
                                     bridge._running = True
+                                    try:
+                                        if bridge._has_flash:
+                                            bridge._camera_manager.setTorchMode(bridge._camera_id, True)
+                                    except Exception as exc:
+                                        log.error(f"Camera2 torch: {exc}")
                                     log.info("Camera2 streaming")
                                 except Exception as exc:
                                     log.error(f"Camera2 repeat: {exc}")
@@ -398,6 +405,10 @@ class AndroidCameraBridge:
 
     # ── управление ──
     def stop_capture(self) -> None:
+        try:
+            self.set_flash(False)
+        except Exception:
+            pass
         self._running = False
         self._ready = False
         for obj, cleanup in [
