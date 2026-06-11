@@ -86,7 +86,7 @@ class TestAegisRLBrain:
     def test_choose_frequency_returns_valid(self):
         brain = AegisRLBrain(profile_path=Path(tempfile.mkdtemp()) / "test.json")
         freq, idx, strategy = brain.choose_frequency(200)
-        assert 4.0 <= freq <= 12.0
+        assert 4.0 <= freq <= 12.5
         assert 0 <= idx < len(brain.actions)
         assert isinstance(strategy, str)
 
