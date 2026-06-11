@@ -43,8 +43,8 @@ android.permissions = CAMERA,WAKE_LOCK,MODIFY_AUDIO_SETTINGS,BLUETOOTH,BLUETOOTH
 android.meta_data = com.google.android.gms.version=0
 
 # Зависимости для сборки
-# Python 3.12 — Kivy 2.3.0 несовместим с Python 3.14
-requirements = python3==3.12.9,kivy==2.3.0,numpy,pyjnius,kivymd
+# hostpython3 и python3 должны совпадать! Kivy 2.3.0 несовместим с Python 3.14
+requirements = hostpython3==3.12.9,python3==3.12.9,kivy==2.3.0,numpy,pyjnius,kivymd
 
 # Signing (release) — ключи задаются через env vars:
 #   AEGIS_KEYSTORE=/path/to/release.keystore
