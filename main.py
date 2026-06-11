@@ -17,19 +17,40 @@ import os
 import sys
 
 # ── Логирование в файл на Android ──
-if platform == "android":
-    from jnius import autoclass
-    Environment = autoclass("android.os.Environment")
-    log_dir = Environment.getExternalStorageDirectory().getAbsolutePath()
-    log_path = os.path.join(log_dir, "aegis_debug.log")
-else:
-    log_path = "/tmp/aegis_debug.log"
+def _setup_file_logging():
+    if platform == "android":
+        try:
+            from jnius import autoclass
 
-file_handler = logging.FileHandler(log_path, mode="w", encoding="utf-8")
-file_handler.setLevel(logging.DEBUG)
-file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
-logging.root.addHandler(file_handler)
-logging.root.setLevel(logging.DEBUG)
+            PythonActivity = autoclass("org.kivy.android.PythonActivity")
+            activity = PythonActivity.mActivity
+            log_dir_obj = activity.getExternalFilesDir(None) if activity else None
+            if log_dir_obj is None and activity is not None:
+                log_dir_obj = activity.getFilesDir()
+            log_dir = log_dir_obj.getAbsolutePath()
+        except Exception as exc:  # noqa: BLE001
+            logging.basicConfig(level=logging.DEBUG)
+            logging.getLogger("aegis").warning("File logging disabled: %s", exc)
+            return None
+    else:
+        log_dir = "/tmp"
+
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+        log_path = os.path.join(log_dir, "aegis_debug.log")
+        file_handler = logging.FileHandler(log_path, mode="w", encoding="utf-8")
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        logging.root.addHandler(file_handler)
+        logging.root.setLevel(logging.DEBUG)
+        return log_path
+    except Exception as exc:  # noqa: BLE001
+        logging.basicConfig(level=logging.DEBUG)
+        logging.getLogger("aegis").warning("File logging disabled: %s", exc)
+        return None
+
+
+log_path = _setup_file_logging()
 
 log = logging.getLogger("aegis")
 log.info(f"=== AegisNeuro started === platform={platform} log_path={log_path}")
