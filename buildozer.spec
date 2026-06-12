@@ -41,10 +41,7 @@ android.accept_sdk_licenses = True
 # Разрешения
 android.permissions = WAKE_LOCK,MODIFY_AUDIO_SETTINGS,BLUETOOTH,BLUETOOTH_ADMIN,BLUETOOTH_SCAN,BLUETOOTH_CONNECT,ACCESS_FINE_LOCATION
 android.enable_androidx = True
-android.meta_data = com.google.android.gms.version=@integer/google_play_services_version
-# Wear receiver source is kept in android_src/, but Buildozer/p4a does not
-# reliably merge Google Play Services Wearable yet. Keep the phone APK green;
-# wire this receiver after a dedicated p4a Gradle compatibility pass.
+# Wear OS Data Layer receiver: accepts watch vitals into watch_payloads.jsonl.
 android.add_src = android_src
 android.add_manifest_xml = android_manifest/aegis_watch_receiver.xml
 android.gradle_dependencies = com.google.android.gms:play-services-wearable:19.0.0
