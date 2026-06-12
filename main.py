@@ -63,6 +63,7 @@ from aegis.update_checker import check_for_update
 from aegis_audio_engine import AegisAudioEngine
 
 APP_VERSION = "1.0.0"
+WATCH_APK_URL = "https://github.com/shinviktor14-beep/aegisneuro/releases/latest/download/app-debug.apk"
 
 
 # ==============================================================================
@@ -282,6 +283,8 @@ class AegisNeuroMobileScreen(MDScreen):
         self.audio_calibration_ok = False
         self.audio_left_ok = False
         self.audio_right_ok = False
+        self.watch_registration_ok = False
+        self.registration_mode = "registration"
         self._audio_device_name = None
         self._headphone_check_running = False
         self._headphone_check_played = False
@@ -300,6 +303,7 @@ class AegisNeuroMobileScreen(MDScreen):
             size_hint_y=None,
         )
         content.bind(minimum_height=content.setter('height'))
+        self.content = content
 
         # ── 1. Карточка заголовка ──
         title_card = MDCard(
@@ -312,6 +316,7 @@ class AegisNeuroMobileScreen(MDScreen):
             elevation=2,
         )
         title_card.bind(minimum_height=title_card.setter('height'))
+        self.title_card = title_card
 
         self.title_label = MDLabel(
             text="AEGISNEURO",
@@ -365,6 +370,63 @@ class AegisNeuroMobileScreen(MDScreen):
         self.update_banner.add_widget(self.update_download_btn)
         content.add_widget(self.update_banner)
         self._update_url = None
+
+        self.registration_card = MDCard(
+            orientation='vertical',
+            padding=dp(18),
+            spacing=dp(12),
+            size_hint_y=None,
+            radius=[dp(12)],
+            md_bg_color=[0.06, 0.08, 0.12, 1],
+            elevation=2,
+        )
+        self.registration_card.bind(minimum_height=self.registration_card.setter('height'))
+
+        self.registration_title = MDLabel(
+            text="Регистрация оборудования",
+            halign="center",
+            font_style="H6",
+            theme_text_color="Custom",
+            text_color=[0.85, 0.92, 0.96, 1],
+            size_hint_y=None,
+            height=dp(34),
+        )
+        self.registration_detail = MDLabel(
+            text="Перед началом нужно проверить наушники и часы",
+            halign="center",
+            font_style="Body2",
+            theme_text_color="Custom",
+            text_color=[0.58, 0.68, 0.74, 1],
+            size_hint_y=None,
+            height=dp(28),
+        )
+        self.registration_detail.bind(
+            width=lambda inst, w: setattr(inst, 'text_size', (w, None))
+        )
+        self.registration_detail.bind(
+            texture_size=lambda inst, ts: setattr(inst, 'height', max(dp(28), ts[1]))
+        )
+        self.check_headphones_btn = MDRaisedButton(
+            text="1. ПРОВЕРКА НАУШНИКОВ",
+            md_bg_color=[0.18, 0.45, 0.72, 1],
+            size_hint_x=1.0,
+            size_hint_y=None,
+            height=dp(52),
+            on_release=self.open_headphone_registration,
+        )
+        self.check_watch_btn = MDRaisedButton(
+            text="2. ПРОВЕРКА ЧАСОВ / СЕНСОРОВ",
+            md_bg_color=[0.18, 0.55, 0.26, 1],
+            size_hint_x=1.0,
+            size_hint_y=None,
+            height=dp(52),
+            on_release=self.open_watch_registration,
+        )
+        self.registration_card.add_widget(self.registration_title)
+        self.registration_card.add_widget(self.registration_detail)
+        self.registration_card.add_widget(self.check_headphones_btn)
+        self.registration_card.add_widget(self.check_watch_btn)
+        content.add_widget(self.registration_card)
 
         # ── 2. Карточка статуса ──
         self.status_card = MDCard(
@@ -481,6 +543,57 @@ class AegisNeuroMobileScreen(MDScreen):
         self.audio_status_card.add_widget(audio_check_row)
         content.add_widget(self.audio_status_card)
 
+        self.headphone_actions = MDBoxLayout(
+            orientation='vertical',
+            size_hint_y=None,
+            height=dp(56),
+            padding=[dp(8), dp(4), dp(8), dp(4)],
+        )
+        self.headphone_back_btn = MDRaisedButton(
+            text="НАЗАД",
+            md_bg_color=[0.18, 0.22, 0.28, 1],
+            size_hint_x=1.0,
+            size_hint_y=None,
+            height=dp(48),
+            on_release=self.back_to_registration,
+        )
+        self.headphone_actions.add_widget(self.headphone_back_btn)
+
+        self.watch_check_actions = MDBoxLayout(
+            orientation='vertical',
+            size_hint_y=None,
+            height=dp(168),
+            spacing=dp(8),
+            padding=[dp(8), dp(4), dp(8), dp(4)],
+        )
+        self.watch_retry_btn = MDRaisedButton(
+            text="ПОВТОРИТЬ",
+            md_bg_color=[0.18, 0.45, 0.72, 1],
+            size_hint_x=1.0,
+            size_hint_y=None,
+            height=dp(48),
+            on_release=self.open_watch_registration,
+        )
+        self.watch_install_btn = MDRaisedButton(
+            text="УСТАНОВИТЬ НА ЧАСЫ",
+            md_bg_color=[0.55, 0.22, 0.12, 1],
+            size_hint_x=1.0,
+            size_hint_y=None,
+            height=dp(48),
+            on_release=self.open_watch_install,
+        )
+        self.watch_back_btn = MDRaisedButton(
+            text="НАЗАД",
+            md_bg_color=[0.18, 0.22, 0.28, 1],
+            size_hint_x=1.0,
+            size_hint_y=None,
+            height=dp(48),
+            on_release=self.back_to_registration,
+        )
+        self.watch_check_actions.add_widget(self.watch_retry_btn)
+        self.watch_check_actions.add_widget(self.watch_install_btn)
+        self.watch_check_actions.add_widget(self.watch_back_btn)
+
         # ── 3. Селектор профиля ──
         profile_card = MDCard(
             orientation='vertical',
@@ -535,6 +648,7 @@ class AegisNeuroMobileScreen(MDScreen):
         gender_row.add_widget(self.male_btn)
         gender_row.add_widget(self.female_btn)
         profile_card.add_widget(gender_row)
+        self.profile_card = profile_card
         content.add_widget(profile_card)
 
         # ── 4. Карточка метрик ──
@@ -805,10 +919,12 @@ class AegisNeuroMobileScreen(MDScreen):
             font_style="Button",
         )
         action_container.add_widget(self.action_btn)
+        self.action_container = action_container
         content.add_widget(action_container)
 
         # ── Нижний отступ для скролла ──
         bottom_spacer = MDBoxLayout(size_hint_y=None, height=dp(24))
+        self.bottom_spacer = bottom_spacer
         content.add_widget(bottom_spacer)
 
         scroll.add_widget(content)
@@ -819,6 +935,104 @@ class AegisNeuroMobileScreen(MDScreen):
         Clock.schedule_interval(self.refresh_watch_status, 1.0)
         Clock.schedule_interval(self.refresh_audio_status, 1.0)
         Clock.schedule_once(self._check_for_update, 3.0)
+        self._render_registration_mode("registration")
+
+    def _render_registration_mode(self, mode):
+        self.registration_mode = mode
+        widgets = [self.title_card]
+
+        if mode == "registration":
+            self._update_registration_summary()
+            widgets.append(self.registration_card)
+        elif mode == "headphones":
+            widgets.append(self.audio_status_card)
+            widgets.append(self.headphone_actions)
+        elif mode == "watch_check":
+            widgets.append(self.status_card)
+            widgets.append(self.watch_check_actions)
+        elif mode == "main":
+            widgets.extend([
+                self.status_card,
+                self.audio_status_card,
+                self.profile_card,
+                self.metrics_card,
+                self.action_container,
+                self.bottom_spacer,
+            ])
+
+        self.content.clear_widgets()
+        for widget in widgets:
+            self.content.add_widget(widget)
+
+    def _update_registration_summary(self):
+        audio_text = "наушники проверены" if self.audio_calibration_ok else "наушники не проверены"
+        watch_text = "часы/сенсоры готовы" if self.watch_registration_ok else "часы/сенсоры не проверены"
+        self.registration_detail.text = f"{audio_text}\n{watch_text}"
+        self.check_headphones_btn.md_bg_color = (
+            [0.08, 0.55, 0.24, 1] if self.audio_calibration_ok else [0.58, 0.12, 0.12, 1]
+        )
+        self.check_watch_btn.md_bg_color = (
+            [0.08, 0.55, 0.24, 1] if self.watch_registration_ok else [0.58, 0.12, 0.12, 1]
+        )
+        self._update_headphone_button_colors()
+
+    def _update_headphone_button_colors(self):
+        if hasattr(self, "audio_left_btn"):
+            self.audio_left_btn.md_bg_color = (
+                [0.08, 0.55, 0.24, 1] if self.audio_left_ok else [0.58, 0.12, 0.12, 1]
+            )
+        if hasattr(self, "audio_right_btn"):
+            self.audio_right_btn.md_bg_color = (
+                [0.08, 0.55, 0.24, 1] if self.audio_right_ok else [0.58, 0.12, 0.12, 1]
+            )
+        if hasattr(self, "watch_retry_btn"):
+            self.watch_retry_btn.md_bg_color = (
+                [0.08, 0.55, 0.24, 1] if self.watch_registration_ok else [0.58, 0.12, 0.12, 1]
+            )
+
+    def _complete_registration_step(self):
+        self.watch_registration_ok = self._is_watch_ready_for_registration()
+        if self.audio_calibration_ok and self.watch_registration_ok:
+            self._render_registration_mode("main")
+        else:
+            self._render_registration_mode("registration")
+
+    def _is_watch_ready_for_registration(self):
+        status = self.watch_bridge.status()
+        return bool(
+            status.get("connected")
+            or status.get("watch_app_ready")
+            or status.get("rr_count", 0) >= 10
+        )
+
+    def open_headphone_registration(self, *args):
+        self.refresh_audio_status()
+        self._render_registration_mode("headphones")
+
+    def open_watch_registration(self, *args):
+        self.refresh_watch_status()
+        self.watch_registration_ok = self._is_watch_ready_for_registration()
+        if self.watch_registration_ok and self.audio_calibration_ok:
+            self._render_registration_mode("main")
+        else:
+            self._render_registration_mode("watch_check")
+
+    def back_to_registration(self, *args):
+        self._complete_registration_step()
+
+    def open_watch_install(self, *args):
+        self.status_card.md_bg_color = [0.3, 0.2, 0.05, 1]
+        self.status_label.text = "Установка на часы"
+        self.status_detail_label.text = (
+            "Откроется установочный файл AegisNeuro Watch. В продакшне эта кнопка ведёт "
+            "в официальный канал установки, где клиент подтверждает установку на часах."
+        )
+        try:
+            import webbrowser
+
+            webbrowser.open(WATCH_APK_URL)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Watch install URL open failed: %s", exc)
 
     # ── Обновление цвета метрик в зависимости от значений ──
     def _update_metric_colors(self):
@@ -855,6 +1069,7 @@ class AegisNeuroMobileScreen(MDScreen):
             self.audio_calibration_ok = False
             self.audio_left_ok = False
             self.audio_right_ok = False
+            self._update_headphone_button_colors()
             self.audio_status_card.md_bg_color = [0.28, 0.16, 0.05, 1]
             self.audio_status_label.text = "Сначала подключите наушники"
             self.audio_status_detail_label.text = "Тест 4.7 Гц доступен только через стерео-наушники"
@@ -863,6 +1078,7 @@ class AegisNeuroMobileScreen(MDScreen):
         self.audio_calibration_ok = False
         self.audio_left_ok = False
         self.audio_right_ok = False
+        self._update_headphone_button_colors()
         self._headphone_check_running = True
         self._headphone_check_played = True
         self.audio_engine.start_headphone_check(4.7, 9.0)
@@ -891,6 +1107,7 @@ class AegisNeuroMobileScreen(MDScreen):
             self.audio_calibration_ok = False
             self.audio_left_ok = False
             self.audio_right_ok = False
+            self._update_headphone_button_colors()
             self.audio_status_card.md_bg_color = [0.28, 0.16, 0.05, 1]
             self.audio_status_label.text = "Нужны наушники"
             self.audio_status_detail_label.text = "Подключите стерео-наушники и повторите тест"
@@ -903,11 +1120,13 @@ class AegisNeuroMobileScreen(MDScreen):
 
         self.audio_calibration_ok = self.audio_left_ok and self.audio_right_ok
         self._audio_device_name = audio_status["device_name"]
+        self._update_headphone_button_colors()
 
         if self.audio_calibration_ok:
             self.audio_status_card.md_bg_color = [0.08, 0.16, 0.1, 1]
             self.audio_status_label.text = "Стерео 4.7 Гц проверено"
             self.audio_status_detail_label.text = f"{audio_status['device_name']}: левый и правый канал подтверждены"
+            Clock.schedule_once(lambda dt: self._complete_registration_step(), 0.8)
         else:
             missing = "правый" if self.audio_left_ok else "левый"
             self.audio_status_card.md_bg_color = [0.3, 0.2, 0.05, 1]
@@ -930,6 +1149,7 @@ class AegisNeuroMobileScreen(MDScreen):
                 self.audio_calibration_ok = False
                 self.audio_left_ok = False
                 self.audio_right_ok = False
+                self._update_headphone_button_colors()
                 self._headphone_check_played = False
             self._audio_device_name = audio_status["device_name"]
             self.audio_status_card.md_bg_color = [0.08, 0.16, 0.1, 1]
@@ -943,11 +1163,14 @@ class AegisNeuroMobileScreen(MDScreen):
             self.audio_calibration_ok = False
             self.audio_left_ok = False
             self.audio_right_ok = False
+            self._update_headphone_button_colors()
             self._audio_device_name = None
             self._headphone_check_played = False
             self.audio_status_card.md_bg_color = [0.28, 0.16, 0.05, 1]
             self.audio_status_label.text = "Нужны наушники"
             self.audio_status_detail_label.text = "Бинауральные частоты работают только в стерео-наушниках"
+        if self.registration_mode == "registration":
+            self._update_registration_summary()
         return audio_status
 
     def refresh_watch_status(self, dt=None):
@@ -979,16 +1202,34 @@ class AegisNeuroMobileScreen(MDScreen):
             self.status_card.md_bg_color = [0.3, 0.2, 0.05, 1]
             self.status_label.text = "Aegis Watch найден"
             device_text = watch_app_names or "AegisNeuro Watch"
-            self.status_detail_label.text = f"{device_text}\nЗапустите измерение на часах и разрешите BODY_SENSORS"
+            self.status_detail_label.text = (
+                f"{device_text}\nМодуль установлен. Запустите измерение на часах "
+                "и разрешите доступ к сенсорам."
+            )
         elif node_connected:
             self.status_card.md_bg_color = [0.3, 0.2, 0.05, 1]
             self.status_label.text = "Часы подключены, модуля нет"
             device_text = node_names or "Wear OS"
-            self.status_detail_label.text = f"{device_text}\nAegisNeuro Watch-компонент не найден на часах"
+            self.status_detail_label.text = (
+                f"{device_text}\nСвязь есть, но AegisNeuro Watch не установлен. "
+                "Нажмите «УСТАНОВИТЬ НА ЧАСЫ»."
+            )
         else:
             self.status_card.md_bg_color = [0.08, 0.12, 0.18, 1]
             self.status_label.text = "Ожидаем Galaxy Watch4"
-            self.status_detail_label.text = "Проверьте Bluetooth/Galaxy Wearable и поток HR/IBI с Wear OS"
+            self.status_detail_label.text = "Сначала подключите часы в Galaxy Wearable или другое устройство-сенсор"
+
+        if hasattr(self, "watch_install_btn"):
+            install_available = bool(node_connected and not watch_app_ready and not connected)
+            self.watch_install_btn.disabled = not install_available
+            self.watch_install_btn.md_bg_color = (
+                [0.55, 0.22, 0.12, 1] if install_available else [0.18, 0.22, 0.28, 1]
+            )
+
+        self.watch_registration_ok = self._is_watch_ready_for_registration()
+        self._update_headphone_button_colors()
+        if self.registration_mode == "registration":
+            self._update_registration_summary()
 
     def start_scan(self, *args):
         if self.is_scanning:
