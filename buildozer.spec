@@ -44,9 +44,9 @@ android.meta_data = com.google.android.gms.version=0
 # Wear receiver source is kept in android_src/, but Buildozer/p4a does not
 # reliably merge Google Play Services Wearable yet. Keep the phone APK green;
 # wire this receiver after a dedicated p4a Gradle compatibility pass.
-# android.add_src = android_src
-# android.add_manifest_xml = android_manifest/aegis_watch_receiver.xml
-# android.gradle_dependencies = com.google.android.gms:play-services-wearable:19.0.0
+android.add_src = android_src
+android.add_manifest_xml = android_manifest/aegis_watch_receiver.xml
+android.gradle_dependencies = com.google.android.gms:play-services-wearable:19.0.0
 
 # Зависимости для сборки
 # Kivy 2.3.1 поддерживает Python 3.8-3.13
