@@ -1,7 +1,6 @@
 package org.aegisneuro.watch
 
 import android.Manifest
-import android.app.Activity
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Bundle
@@ -10,6 +9,7 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.health.services.client.HealthServices
@@ -34,7 +34,7 @@ import kotlin.math.roundToInt
 
 private const val VITALS_PATH = "/aegis/watch/vitals"
 
-class MainActivity : Activity() {
+class MainActivity : ComponentActivity() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val measureClient by lazy { HealthServices.getClient(this).measureClient }
     private val messageClient: MessageClient by lazy { Wearable.getMessageClient(this) }
@@ -50,7 +50,7 @@ class MainActivity : Activity() {
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { granted ->
+    ) { granted: Boolean ->
         if (granted) {
             startMeasurement()
         } else {
@@ -149,12 +149,6 @@ class MainActivity : Activity() {
         if (isMeasuring) return
         scope.launch {
             try {
-                val capabilities = measureClient.getCapabilitiesAsync().await()
-                if (!capabilities.supportedDataTypesMeasure.contains(DataType.HEART_RATE_BPM)) {
-                    setStatus("HR недоступен", "Health Services не отдает HEART_RATE_BPM")
-                    return@launch
-                }
-
                 measureClient.registerMeasureCallback(DataType.HEART_RATE_BPM, measureCallback)
                 isMeasuring = true
                 actionButton.text = "СТОП"
