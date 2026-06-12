@@ -250,12 +250,13 @@ class AegisNeuroMobileScreen(MDScreen):
             theme_text_color="Custom",
             text_color=[0.85, 0.92, 0.96, 1],
             size_hint_y=None,
+            height=dp(32),
         )
         self.status_label.bind(
-            texture_size=self.status_label.setter('size')
+            width=lambda inst, w: setattr(inst, 'text_size', (w, None))
         )
         self.status_label.bind(
-            height=lambda *a: self.status_card.setter('minimum_height')(self.status_card, self.status_card.minimum_height)
+            texture_size=lambda inst, ts: setattr(inst, 'height', max(dp(32), ts[1]))
         )
 
         self.status_detail_label = MDLabel(
@@ -265,9 +266,13 @@ class AegisNeuroMobileScreen(MDScreen):
             theme_text_color="Custom",
             text_color=[0.55, 0.65, 0.70, 1],
             size_hint_y=None,
+            height=dp(24),
         )
         self.status_detail_label.bind(
-            texture_size=self.status_detail_label.setter('size')
+            width=lambda inst, w: setattr(inst, 'text_size', (w, None))
+        )
+        self.status_detail_label.bind(
+            texture_size=lambda inst, ts: setattr(inst, 'height', max(dp(24), ts[1]))
         )
 
         self.status_card.add_widget(self.status_label)
@@ -711,6 +716,7 @@ class AegisNeuroMobileScreen(MDScreen):
 
         self.current_rmssd = prediction["metrics"]["rmssd"]
         self.current_stress = prediction["metrics"]["stress_index"]
+        self.storm_prob = prediction["storm_probability_pct"]
 
         # ОБУЧЕНИЕ ИИ
         rmssd_growth = self.current_rmssd - self.old_rmssd
