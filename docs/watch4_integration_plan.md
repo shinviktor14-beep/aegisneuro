@@ -117,8 +117,9 @@
 
 - `android_src/org/aegisneuro/aegisneuro/AegisWatchMessageService.java`
 - манифест-фрагмент `android_manifest/aegis_watch_receiver.xml`
-- Buildozer подключает `com.google.android.gms:play-services-wearable`
-- входящие сообщения дописываются в `watch_payloads.jsonl`, который читает `WatchDataBridge`
+- receiver дописывает входящие сообщения в `watch_payloads.jsonl`, который читает `WatchDataBridge`
+
+Важно: receiver пока не включен в `buildozer.spec` автоматически. Первая попытка подключить `com.google.android.gms:play-services-wearable` к python-for-android сборке сломала CI `v43`, поэтому код receiver оставлен в репозитории, а включение будет отдельным шагом после проверки совместимости Gradle dependency в Buildozer.
 
 Ограничение текущего этапа: стандартный Health Services `MeasureClient` надежно дает `HEART_RATE_BPM`, но не гарантирует R-R/IBI на всех Wear OS устройствах. Поэтому `ibi_ms` пока отправляется пустым массивом. Для полноценного HRV нужно следующим шагом добавить отдельный источник IBI:
 
