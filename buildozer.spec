@@ -40,6 +40,7 @@ android.accept_sdk_licenses = True
 
 # Разрешения
 android.permissions = WAKE_LOCK,MODIFY_AUDIO_SETTINGS,BLUETOOTH,BLUETOOTH_ADMIN,BLUETOOTH_SCAN,BLUETOOTH_CONNECT,ACCESS_FINE_LOCATION
+android.enable_androidx = True
 android.meta_data = com.google.android.gms.version=0
 # Wear receiver source is kept in android_src/, but Buildozer/p4a does not
 # reliably merge Google Play Services Wearable yet. Keep the phone APK green;
