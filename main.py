@@ -280,6 +280,8 @@ class AegisNeuroMobileScreen(MDScreen):
         self.current_bpm = 0
         self.storm_prob = 0
         self.audio_calibration_ok = False
+        self.audio_left_ok = False
+        self.audio_right_ok = False
         self._audio_device_name = None
         self._headphone_check_running = False
         self._headphone_check_played = False
@@ -451,22 +453,29 @@ class AegisNeuroMobileScreen(MDScreen):
             orientation='horizontal',
             size_hint_y=None,
             height=dp(48),
-            spacing=dp(10),
+            spacing=dp(8),
         )
         self.audio_test_btn = MDRaisedButton(
             text="ТЕСТ 4.7 ГЦ",
             md_bg_color=[0.18, 0.45, 0.72, 1],
-            size_hint_x=0.5,
+            size_hint_x=0.34,
             on_release=self.start_headphone_check,
         )
-        self.audio_confirm_btn = MDRaisedButton(
-            text="СЛЫШУ Л/П",
+        self.audio_left_btn = MDRaisedButton(
+            text="ЛЕВЫЙ",
             md_bg_color=[0.18, 0.55, 0.26, 1],
-            size_hint_x=0.5,
-            on_release=self.confirm_headphone_check,
+            size_hint_x=0.33,
+            on_release=self.confirm_left_headphone,
+        )
+        self.audio_right_btn = MDRaisedButton(
+            text="ПРАВЫЙ",
+            md_bg_color=[0.18, 0.55, 0.26, 1],
+            size_hint_x=0.33,
+            on_release=self.confirm_right_headphone,
         )
         audio_check_row.add_widget(self.audio_test_btn)
-        audio_check_row.add_widget(self.audio_confirm_btn)
+        audio_check_row.add_widget(self.audio_left_btn)
+        audio_check_row.add_widget(self.audio_right_btn)
         self.audio_status_card.add_widget(self.audio_status_label)
         self.audio_status_card.add_widget(self.audio_status_detail_label)
         self.audio_status_card.add_widget(audio_check_row)
@@ -844,18 +853,22 @@ class AegisNeuroMobileScreen(MDScreen):
         audio_status = self.audio_bridge.status()
         if not audio_status["connected"]:
             self.audio_calibration_ok = False
+            self.audio_left_ok = False
+            self.audio_right_ok = False
             self.audio_status_card.md_bg_color = [0.28, 0.16, 0.05, 1]
             self.audio_status_label.text = "Сначала подключите наушники"
             self.audio_status_detail_label.text = "Тест 4.7 Гц доступен только через стерео-наушники"
             return
 
         self.audio_calibration_ok = False
+        self.audio_left_ok = False
+        self.audio_right_ok = False
         self._headphone_check_running = True
         self._headphone_check_played = True
         self.audio_engine.start_headphone_check(4.7, 9.0)
         self.audio_status_card.md_bg_color = [0.06, 0.14, 0.22, 1]
         self.audio_status_label.text = "Идёт тест наушников"
-        self.audio_status_detail_label.text = "Левое ухо, правое ухо, затем бинауральная разность 4.7 Гц"
+        self.audio_status_detail_label.text = "Слева: ровный тон. Справа: ровный тон. Потом оба уха: разность 4.7 Гц"
         Clock.schedule_once(self._finish_headphone_check, 9.5)
 
     def _finish_headphone_check(self, dt=None):
@@ -863,29 +876,49 @@ class AegisNeuroMobileScreen(MDScreen):
         if not self.audio_calibration_ok:
             self.audio_status_card.md_bg_color = [0.28, 0.16, 0.05, 1]
             self.audio_status_label.text = "Подтвердите стерео"
-            self.audio_status_detail_label.text = "Нажмите «СЛЫШУ Л/П», если левый и правый канал были раздельно"
+            self.audio_status_detail_label.text = "Нажмите «ЛЕВЫЙ» и «ПРАВЫЙ», если тон был строго в каждом ухе отдельно"
 
-    def confirm_headphone_check(self, *args):
+    def _confirm_headphone_side(self, side):
         audio_status = self.audio_bridge.status()
         if not self._headphone_check_played:
             self.audio_calibration_ok = False
             self.audio_status_card.md_bg_color = [0.28, 0.16, 0.05, 1]
             self.audio_status_label.text = "Сначала запустите тест"
-            self.audio_status_detail_label.text = "Нужно услышать левый канал, правый канал и 4.7 Гц"
+            self.audio_status_detail_label.text = "Сначала должен прозвучать левый канал, потом правый, потом 4.7 Гц"
             return
 
         if not audio_status["connected"]:
             self.audio_calibration_ok = False
+            self.audio_left_ok = False
+            self.audio_right_ok = False
             self.audio_status_card.md_bg_color = [0.28, 0.16, 0.05, 1]
             self.audio_status_label.text = "Нужны наушники"
             self.audio_status_detail_label.text = "Подключите стерео-наушники и повторите тест"
             return
 
-        self.audio_calibration_ok = True
+        if side == "left":
+            self.audio_left_ok = True
+        elif side == "right":
+            self.audio_right_ok = True
+
+        self.audio_calibration_ok = self.audio_left_ok and self.audio_right_ok
         self._audio_device_name = audio_status["device_name"]
-        self.audio_status_card.md_bg_color = [0.08, 0.16, 0.1, 1]
-        self.audio_status_label.text = "Стерео 4.7 Гц проверено"
-        self.audio_status_detail_label.text = f"{audio_status['device_name']}: левый и правый канал подтверждены"
+
+        if self.audio_calibration_ok:
+            self.audio_status_card.md_bg_color = [0.08, 0.16, 0.1, 1]
+            self.audio_status_label.text = "Стерео 4.7 Гц проверено"
+            self.audio_status_detail_label.text = f"{audio_status['device_name']}: левый и правый канал подтверждены"
+        else:
+            missing = "правый" if self.audio_left_ok else "левый"
+            self.audio_status_card.md_bg_color = [0.3, 0.2, 0.05, 1]
+            self.audio_status_label.text = "Подтвердите второй канал"
+            self.audio_status_detail_label.text = f"Подтверждён один канал. Теперь подтвердите {missing} наушник"
+
+    def confirm_left_headphone(self, *args):
+        self._confirm_headphone_side("left")
+
+    def confirm_right_headphone(self, *args):
+        self._confirm_headphone_side("right")
 
     def refresh_audio_status(self, dt=None):
         audio_status = self.audio_bridge.status()
@@ -895,6 +928,8 @@ class AegisNeuroMobileScreen(MDScreen):
         if audio_status["connected"]:
             if self._audio_device_name and self._audio_device_name != audio_status["device_name"]:
                 self.audio_calibration_ok = False
+                self.audio_left_ok = False
+                self.audio_right_ok = False
                 self._headphone_check_played = False
             self._audio_device_name = audio_status["device_name"]
             self.audio_status_card.md_bg_color = [0.08, 0.16, 0.1, 1]
@@ -903,9 +938,11 @@ class AegisNeuroMobileScreen(MDScreen):
                 self.audio_status_detail_label.text = audio_status["device_name"]
             else:
                 self.audio_status_label.text = "Наушники подключены"
-                self.audio_status_detail_label.text = "Запустите тест 4.7 Гц и подтвердите левый/правый канал"
+                self.audio_status_detail_label.text = "Запустите тест 4.7 Гц и подтвердите левый и правый наушник"
         else:
             self.audio_calibration_ok = False
+            self.audio_left_ok = False
+            self.audio_right_ok = False
             self._audio_device_name = None
             self._headphone_check_played = False
             self.audio_status_card.md_bg_color = [0.28, 0.16, 0.05, 1]
@@ -974,7 +1011,7 @@ class AegisNeuroMobileScreen(MDScreen):
             self.status_card.md_bg_color = [0.3, 0.2, 0.05, 1]
             self.status_label.text = "Проверьте стерео 4.7 Гц"
             self.status_detail_label.text = (
-                "Нажмите «ТЕСТ 4.7 ГЦ», проверьте левое/правое ухо и подтвердите «СЛЫШУ Л/П»."
+                "Нажмите «ТЕСТ 4.7 ГЦ», затем подтвердите отдельно «ЛЕВЫЙ» и «ПРАВЫЙ»."
             )
             return
 
