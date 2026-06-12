@@ -220,14 +220,3 @@ jobs:
           path: wear/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14
-
-      - name: Publish Wear APK to GitHub Release
-        if: success()
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ github.run_number }}
-          name: "Build #${{ github.run_number }}"
-          body: "Auto-built APKs from commit ${{ github.sha }}"
-          files: wear/app/build/outputs/apk/debug/*.apk
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

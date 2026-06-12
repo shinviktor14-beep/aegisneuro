@@ -127,7 +127,8 @@ gradle :app:assembleDebug
 - `android_src/org/aegisneuro/aegisneuro/AegisWatchMessageService.java`
 - манифест-фрагмент `android_manifest/aegis_watch_receiver.xml`
 - receiver дописывает входящие сообщения в `watch_payloads.jsonl`, который читает `WatchDataBridge`
-- `buildozer.spec` подключает Java source, manifest fragment и `com.google.android.gms:play-services-wearable`
+- receiver пока не включен в `buildozer.spec`, потому что `com.google.android.gms:play-services-wearable` ломает текущую Buildozer/p4a сборку. Код оставлен для отдельного compatibility pass.
+- Wear APK собирается отдельным GitHub Actions artifact `aegisneuro-watch-debug`, не release asset.
 
 Если телефон показывает "Ожидаем Galaxy Watch4", значит одно из звеньев еще не работает:
 
