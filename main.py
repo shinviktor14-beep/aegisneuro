@@ -144,6 +144,73 @@ class WatchDataBridge:
             log.warning("Watch runtime bridge unavailable: %s", exc)
 
 
+class AudioOutputBridge:
+    """Checks whether binaural audio can be delivered through headphones."""
+
+    HEADPHONE_TYPES = {
+        "TYPE_WIRED_HEADSET": "проводная гарнитура",
+        "TYPE_WIRED_HEADPHONES": "проводные наушники",
+        "TYPE_BLUETOOTH_A2DP": "Bluetooth-наушники",
+        "TYPE_BLUETOOTH_SCO": "Bluetooth-гарнитура",
+        "TYPE_USB_HEADSET": "USB-наушники",
+        "TYPE_BLE_HEADSET": "BLE-наушники",
+    }
+
+    def __init__(self):
+        self._last_status = {
+            "connected": platform != "android",
+            "device_name": "desktop",
+            "detail": "desktop audio",
+        }
+
+    def status(self):
+        if platform != "android":
+            return dict(self._last_status)
+
+        try:
+            from jnius import autoclass
+
+            Context = autoclass("android.content.Context")
+            AudioDeviceInfo = autoclass("android.media.AudioDeviceInfo")
+            AudioManager = autoclass("android.media.AudioManager")
+            PythonActivity = autoclass("org.kivy.android.PythonActivity")
+
+            activity = PythonActivity.mActivity
+            if activity is None:
+                return self._store(False, "нет Activity", "Android Activity недоступна")
+
+            audio_manager = activity.getSystemService(Context.AUDIO_SERVICE)
+            devices = audio_manager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+
+            for device in devices:
+                device_type = device.getType()
+                for attr_name, label in self.HEADPHONE_TYPES.items():
+                    if (
+                        hasattr(AudioDeviceInfo, attr_name)
+                        and device_type == getattr(AudioDeviceInfo, attr_name)
+                    ):
+                        name = str(device.getProductName() or label)
+                        return self._store(True, name, label)
+
+            if audio_manager.isWiredHeadsetOn():
+                return self._store(True, "проводные наушники", "legacy wired")
+            if audio_manager.isBluetoothA2dpOn() or audio_manager.isBluetoothScoOn():
+                return self._store(True, "Bluetooth-наушники", "legacy bluetooth")
+
+            return self._store(False, "нет наушников", "Подключите стерео-наушники")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Audio output check failed: %s", exc)
+            return self._store(False, "не удалось проверить", str(exc))
+
+    def _store(self, connected, device_name, detail):
+        self._last_status = {
+            "connected": bool(connected),
+            "device_name": device_name,
+            "detail": detail,
+        }
+        return dict(self._last_status)
+
+
 # ==============================================================================
 # МОНОЛИТНЫЙ ИНТЕРФЕЙС И КОНТУР БИОЛОГИЧЕСКОЙ ОБРАТНОЙ СВЯЗИ
 # ==============================================================================
@@ -153,6 +220,7 @@ class AegisNeuroMobileScreen(MDScreen):
 
         self.ai_brain = AegisRLBrain()
         self.audio_engine = AegisAudioEngine()
+        self.audio_bridge = AudioOutputBridge()
         self.watch_bridge = WatchDataBridge()
         self.predictor = StormPredictor()
 
@@ -296,6 +364,45 @@ class AegisNeuroMobileScreen(MDScreen):
         self.status_card.add_widget(self.status_label)
         self.status_card.add_widget(self.status_detail_label)
         content.add_widget(self.status_card)
+
+        self.audio_status_card = MDCard(
+            orientation='vertical',
+            padding=dp(16),
+            spacing=dp(4),
+            size_hint_y=None,
+            radius=[dp(12)],
+            md_bg_color=[0.12, 0.09, 0.05, 1],
+            elevation=1,
+        )
+        self.audio_status_card.bind(minimum_height=self.audio_status_card.setter('height'))
+
+        self.audio_status_label = MDLabel(
+            text="Аудиовыход",
+            halign="center",
+            font_style="Subtitle2",
+            theme_text_color="Custom",
+            text_color=[0.9, 0.85, 0.72, 1],
+            size_hint_y=None,
+            height=dp(28),
+        )
+        self.audio_status_detail_label = MDLabel(
+            text="Подключите стерео-наушники",
+            halign="center",
+            font_style="Body2",
+            theme_text_color="Custom",
+            text_color=[0.72, 0.68, 0.58, 1],
+            size_hint_y=None,
+            height=dp(22),
+        )
+        self.audio_status_detail_label.bind(
+            width=lambda inst, w: setattr(inst, 'text_size', (w, None))
+        )
+        self.audio_status_detail_label.bind(
+            texture_size=lambda inst, ts: setattr(inst, 'height', max(dp(22), ts[1]))
+        )
+        self.audio_status_card.add_widget(self.audio_status_label)
+        self.audio_status_card.add_widget(self.audio_status_detail_label)
+        content.add_widget(self.audio_status_card)
 
         # ── 3. Селектор профиля ──
         profile_card = MDCard(
@@ -633,6 +740,7 @@ class AegisNeuroMobileScreen(MDScreen):
         # ── Фоновые задачи ──
         Clock.schedule_interval(self.mobile_lifecycle_loop, 1.0)
         Clock.schedule_interval(self.refresh_watch_status, 1.0)
+        Clock.schedule_interval(self.refresh_audio_status, 1.0)
         Clock.schedule_once(self._check_for_update, 3.0)
 
     # ── Обновление цвета метрик в зависимости от значений ──
@@ -663,6 +771,18 @@ class AegisNeuroMobileScreen(MDScreen):
             self.storm_value_label.text_color = [1, 0.75, 0.2, 1]
         else:
             self.storm_value_label.text_color = [1, 0.35, 0.3, 1]
+
+    def refresh_audio_status(self, dt=None):
+        audio_status = self.audio_bridge.status()
+        if audio_status["connected"]:
+            self.audio_status_card.md_bg_color = [0.08, 0.16, 0.1, 1]
+            self.audio_status_label.text = "Наушники подключены"
+            self.audio_status_detail_label.text = audio_status["device_name"]
+        else:
+            self.audio_status_card.md_bg_color = [0.28, 0.16, 0.05, 1]
+            self.audio_status_label.text = "Нужны наушники"
+            self.audio_status_detail_label.text = "Бинауральные частоты работают только в стерео-наушниках"
+        return audio_status
 
     def refresh_watch_status(self, dt=None):
         if self.is_scanning:
@@ -696,7 +816,16 @@ class AegisNeuroMobileScreen(MDScreen):
 
         rr_data = self.watch_bridge.latest_rr_intervals()
         watch_status = self.watch_bridge.status()
+        audio_status = self.refresh_audio_status()
         self._update_metric_display(watch_status)
+
+        if not audio_status["connected"]:
+            self.status_card.md_bg_color = [0.3, 0.2, 0.05, 1]
+            self.status_label.text = "Подключите наушники"
+            self.status_detail_label.text = (
+                "Для нейрорегуляции нужен стерео-аудиовыход: проводные, USB или Bluetooth-наушники."
+            )
+            return
 
         if len(rr_data) < 10:
             bpm = watch_status["heart_rate_bpm"]
