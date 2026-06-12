@@ -15,6 +15,8 @@ import random
 import logging
 import os
 import sys
+import json
+from pathlib import Path
 
 # ── Логирование в файл на Android ──
 def _setup_file_logging():
@@ -56,7 +58,7 @@ log = logging.getLogger("aegis")
 log.info(f"=== AegisNeuro started === platform={platform} log_path={log_path}")
 
 # Импортируем ядра из пакета aegis
-from aegis.core import AegisRLBrain, StormPredictor
+from aegis.core import AegisRLBrain, StormPredictor, WatchDataBuffer
 from aegis.update_checker import check_for_update
 from aegis_audio_engine import AegisAudioEngine
 
@@ -69,15 +71,59 @@ APP_VERSION = "1.0.0"
 class WatchDataBridge:
     """Заготовка канала данных Wear OS / Galaxy Watch.
 
-    Следующий шаг: заменить mock-данные потоками Health Services с часов.
+    v42: принимает JSONL-пакеты от будущего Android/Wear receiver.
     """
 
     def __init__(self):
-        self.connected = False
-        self.last_rr_intervals = []
+        self.buffer = WatchDataBuffer()
+        self.inbox_path = self._resolve_inbox_path()
+        self._read_offset = 0
 
     def latest_rr_intervals(self):
-        return list(self.last_rr_intervals)
+        self.refresh()
+        return self.buffer.latest_rr_intervals()
+
+    def status(self):
+        self.refresh()
+        return self.buffer.summary()
+
+    def refresh(self):
+        if self.inbox_path is None or not self.inbox_path.exists():
+            return
+
+        try:
+            with self.inbox_path.open("r", encoding="utf-8") as f:
+                f.seek(self._read_offset)
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    self.ingest_payload(json.loads(line))
+                self._read_offset = f.tell()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Watch inbox read failed: %s", exc)
+
+    def ingest_payload(self, payload):
+        accepted = self.buffer.ingest(payload)
+        if accepted:
+            log.info("Watch packet accepted: %s RR intervals", accepted)
+
+    def _resolve_inbox_path(self):
+        try:
+            if platform == "android":
+                from jnius import autoclass
+
+                PythonActivity = autoclass("org.kivy.android.PythonActivity")
+                activity = PythonActivity.mActivity
+                root = activity.getExternalFilesDir(None) if activity else None
+                if root is None and activity is not None:
+                    root = activity.getFilesDir()
+                if root is not None:
+                    return Path(root.getAbsolutePath()) / "watch_payloads.jsonl"
+            return Path("data") / "watch_payloads.jsonl"
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Watch inbox path unavailable: %s", exc)
+            return None
 
 
 # ==============================================================================
@@ -211,7 +257,7 @@ class AegisNeuroMobileScreen(MDScreen):
         )
 
         self.status_detail_label = MDLabel(
-            text="Приложите палец к камере и нажмите кнопку ниже",
+            text="Подключите Galaxy Watch4 и дождитесь потока HR/IBI",
             halign="center",
             font_style="Body1",
             theme_text_color="Custom",
@@ -424,6 +470,7 @@ class AegisNeuroMobileScreen(MDScreen):
 
         # ── Фоновые задачи ──
         Clock.schedule_interval(self.mobile_lifecycle_loop, 1.0)
+        Clock.schedule_interval(self.refresh_watch_status, 1.0)
         Clock.schedule_once(self._check_for_update, 3.0)
 
     # ── Обновление цвета метрик в зависимости от значений ──
@@ -447,15 +494,45 @@ class AegisNeuroMobileScreen(MDScreen):
         else:
             self.rmssd_value_label.text_color = [1, 0.35, 0.3, 1]
 
+    def refresh_watch_status(self, dt=None):
+        if self.is_scanning:
+            return
+
+        watch_status = self.watch_bridge.status()
+        rr_count = watch_status["rr_count"]
+        bpm = watch_status["heart_rate_bpm"]
+        connected = watch_status["connected"]
+        quality = watch_status["quality"]
+
+        if rr_count >= 10:
+            self.status_card.md_bg_color = [0.08, 0.16, 0.1, 1]
+            self.status_label.text = "Galaxy Watch4 готов"
+            bpm_text = f"HR: {bpm} bpm" if bpm else "HR: ожидаем"
+            self.status_detail_label.text = f"{bpm_text}\nIBI/R-R: {rr_count} интервалов, качество: {quality}"
+        elif connected:
+            self.status_card.md_bg_color = [0.3, 0.2, 0.05, 1]
+            self.status_label.text = "Galaxy Watch4 подключены"
+            bpm_text = f"HR: {bpm} bpm" if bpm else "HR получаем"
+            self.status_detail_label.text = f"{bpm_text}\nДля HRV нужно минимум 10 IBI, сейчас: {rr_count}"
+        else:
+            self.status_card.md_bg_color = [0.08, 0.12, 0.18, 1]
+            self.status_label.text = "Ожидаем Galaxy Watch4"
+            self.status_detail_label.text = "Нужен поток HR и IBI/R-R с Wear OS"
+
     def start_scan(self, *args):
         if self.is_scanning:
             return
 
         rr_data = self.watch_bridge.latest_rr_intervals()
-        if not rr_data:
+        if len(rr_data) < 10:
+            watch_status = self.watch_bridge.status()
+            bpm = watch_status["heart_rate_bpm"]
             self.status_card.md_bg_color = [0.3, 0.2, 0.05, 1]
             self.status_label.text = "Galaxy Watch4"
-            self.status_detail_label.text = "Ожидаем поток HR/IBI с часов. Камера и фонарик отключены."
+            if bpm:
+                self.status_detail_label.text = f"HR: {bpm} bpm\nIBI/R-R: {len(rr_data)}/10 для HRV."
+            else:
+                self.status_detail_label.text = "Ожидаем поток HR/IBI с часов. Камера и фонарик отключены."
             return
 
         self.scan_timer = 1

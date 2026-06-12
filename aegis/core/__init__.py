@@ -8,6 +8,7 @@ from .longevity import LongevityTrendAnalyzer
 from .marketplace import AegisMarketplace
 from .orchestrator import AICognitiveOrchestrator
 from .muse import MuseHardwareManager, BRAINFLOW_AVAILABLE
+from .watch import WatchDataBuffer
 
 __all__ = [
     "BioSignalProcessor",
@@ -19,4 +20,5 @@ __all__ = [
     "AICognitiveOrchestrator",
     "MuseHardwareManager",
     "BRAINFLOW_AVAILABLE",
+    "WatchDataBuffer",
 ]
