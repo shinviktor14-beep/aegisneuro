@@ -188,7 +188,6 @@ class AudioOutputBridge:
         "TYPE_WIRED_HEADSET": "проводная гарнитура",
         "TYPE_WIRED_HEADPHONES": "проводные наушники",
         "TYPE_BLUETOOTH_A2DP": "Bluetooth-наушники",
-        "TYPE_BLUETOOTH_SCO": "Bluetooth-гарнитура",
         "TYPE_USB_HEADSET": "USB-наушники",
         "TYPE_BLE_HEADSET": "BLE-наушники",
     }
@@ -228,11 +227,6 @@ class AudioOutputBridge:
                     ):
                         name = str(device.getProductName() or label)
                         return self._store(True, name, label)
-
-            if audio_manager.isWiredHeadsetOn():
-                return self._store(True, "проводные наушники", "legacy wired")
-            if audio_manager.isBluetoothA2dpOn() or audio_manager.isBluetoothScoOn():
-                return self._store(True, "Bluetooth-наушники", "legacy bluetooth")
 
             return self._store(False, "нет наушников", "Подключите стерео-наушники")
         except Exception as exc:  # noqa: BLE001
