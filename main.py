@@ -148,6 +148,8 @@ class AegisNeuroMobileScreen(MDScreen):
         self.gender_profile = "male"
         self.scan_timer = 0
         self.is_scanning = False
+        self.current_bpm = 0
+        self.storm_prob = 0
 
         self.audio_engine.start_tone()
         self.build_ui()
@@ -435,9 +437,136 @@ class AegisNeuroMobileScreen(MDScreen):
         rmssd_col.add_widget(rmssd_unit_label)
         rmssd_col.add_widget(rmssd_name_label)
 
+        # Вторая строка метрик: три значения рядом
+        metrics_row_2 = MDBoxLayout(
+            orientation='horizontal',
+            size_hint_y=None,
+            spacing=dp(12),
+        )
+        metrics_row_2.bind(minimum_height=metrics_row_2.setter('height'))
+
+        # Левая колонка второй строки — Пульс (ЧСС)
+        hr_col = MDBoxLayout(
+            orientation='vertical',
+            size_hint_x=0.33,
+            padding=[0, dp(8), 0, dp(8)],
+            spacing=dp(4),
+        )
+        self.hr_value_label = MDLabel(
+            text="--",
+            halign="center",
+            font_style="H5",
+            theme_text_color="Custom",
+            text_color=[0, 0.8, 0.9, 1],
+            size_hint_y=None,
+            height=dp(40),
+        )
+        hr_unit_label = MDLabel(
+            text="bpm",
+            halign="center",
+            font_style="Caption",
+            theme_text_color="Custom",
+            text_color=[0.5, 0.55, 0.6, 1],
+            size_hint_y=None,
+            height=dp(18),
+        )
+        hr_name_label = MDLabel(
+            text="Пульс (ЧСС)",
+            halign="center",
+            font_style="Body2",
+            theme_text_color="Custom",
+            text_color=[0.7, 0.75, 0.8, 1],
+            size_hint_y=None,
+            height=dp(20),
+        )
+        hr_col.add_widget(self.hr_value_label)
+        hr_col.add_widget(hr_unit_label)
+        hr_col.add_widget(hr_name_label)
+
+        # Средняя колонка второй строки — Частота ИИ
+        freq_col = MDBoxLayout(
+            orientation='vertical',
+            size_hint_x=0.33,
+            padding=[0, dp(8), 0, dp(8)],
+            spacing=dp(4),
+        )
+        self.freq_value_label = MDLabel(
+            text="--",
+            halign="center",
+            font_style="H5",
+            theme_text_color="Custom",
+            text_color=[0.7, 0.4, 0.9, 1],
+            size_hint_y=None,
+            height=dp(40),
+        )
+        freq_unit_label = MDLabel(
+            text="Гц",
+            halign="center",
+            font_style="Caption",
+            theme_text_color="Custom",
+            text_color=[0.5, 0.55, 0.6, 1],
+            size_hint_y=None,
+            height=dp(18),
+        )
+        freq_name_label = MDLabel(
+            text="Частота ИИ",
+            halign="center",
+            font_style="Body2",
+            theme_text_color="Custom",
+            text_color=[0.7, 0.75, 0.8, 1],
+            size_hint_y=None,
+            height=dp(20),
+        )
+        freq_col.add_widget(self.freq_value_label)
+        freq_col.add_widget(freq_unit_label)
+        freq_col.add_widget(freq_name_label)
+
+        # Правая колонка второй строки — Риск Шторма
+        storm_col = MDBoxLayout(
+            orientation='vertical',
+            size_hint_x=0.34,
+            padding=[0, dp(8), 0, dp(8)],
+            spacing=dp(4),
+        )
+        self.storm_value_label = MDLabel(
+            text="--",
+            halign="center",
+            font_style="H5",
+            theme_text_color="Custom",
+            text_color=[0.3, 0.85, 0.6, 1],
+            size_hint_y=None,
+            height=dp(40),
+        )
+        storm_unit_label = MDLabel(
+            text="%",
+            halign="center",
+            font_style="Caption",
+            theme_text_color="Custom",
+            text_color=[0.5, 0.55, 0.6, 1],
+            size_hint_y=None,
+            height=dp(18),
+        )
+        storm_name_label = MDLabel(
+            text="Риск Шторма",
+            halign="center",
+            font_style="Body2",
+            theme_text_color="Custom",
+            text_color=[0.7, 0.75, 0.8, 1],
+            size_hint_y=None,
+            height=dp(20),
+        )
+        storm_col.add_widget(self.storm_value_label)
+        storm_col.add_widget(storm_unit_label)
+        storm_col.add_widget(storm_name_label)
+
+        metrics_row_2.add_widget(hr_col)
+        metrics_row_2.add_widget(freq_col)
+        metrics_row_2.add_widget(storm_col)
+
         metrics_row.add_widget(stress_col)
         metrics_row.add_widget(rmssd_col)
         self.metrics_card.add_widget(metrics_row)
+        self.metrics_card.add_widget(metrics_row_2)
         content.add_widget(self.metrics_card)
 
         # ── 5. Кнопка действия (с отступом снизу) ──
@@ -493,6 +622,14 @@ class AegisNeuroMobileScreen(MDScreen):
             self.rmssd_value_label.text_color = [1, 0.75, 0.2, 1]
         else:
             self.rmssd_value_label.text_color = [1, 0.35, 0.3, 1]
+
+        # Риск Шторма: зелёный (<40%) → жёлтый (40–70%) → красный (>=70%)
+        if self.storm_prob < 40:
+            self.storm_value_label.text_color = [0.3, 0.85, 0.6, 1]
+        elif self.storm_prob < 70:
+            self.storm_value_label.text_color = [1, 0.75, 0.2, 1]
+        else:
+            self.storm_value_label.text_color = [1, 0.35, 0.3, 1]
 
     def refresh_watch_status(self, dt=None):
         if self.is_scanning:
@@ -600,6 +737,18 @@ class AegisNeuroMobileScreen(MDScreen):
     def _update_metric_display(self):
         self.stress_value_label.text = str(int(self.current_stress))
         self.rmssd_value_label.text = str(int(self.current_rmssd))
+        
+        watch_status = self.watch_bridge.status()
+        bpm = watch_status.get("heart_rate_bpm")
+        if bpm:
+            self.current_bpm = bpm
+            self.hr_value_label.text = str(bpm)
+        else:
+            self.hr_value_label.text = "--"
+
+        self.freq_value_label.text = f"{self.active_frequency:.1f}"
+        self.storm_value_label.text = str(int(self.storm_prob))
+        
         self._update_metric_colors()
 
     def set_male_profile(self, instance):
