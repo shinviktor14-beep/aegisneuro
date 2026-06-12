@@ -1,4 +1,5 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+          package="org.aegisneuro.aegisneuro">
     <application>
         <service
             android:name="org.aegisneuro.aegisneuro.AegisWatchMessageService"
