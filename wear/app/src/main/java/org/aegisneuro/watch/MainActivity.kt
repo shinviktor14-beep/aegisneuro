@@ -166,7 +166,7 @@ class MainActivity : ComponentActivity() {
         senderJob = null
         scope.launch {
             try {
-                measureClient.unregisterMeasureCallbackAsync(DataType.HEART_RATE_BPM, measureCallback).await()
+                measureClient.unregisterMeasureCallbackAsync(DataType.HEART_RATE_BPM, measureCallback)
             } catch (_: Exception) {
             } finally {
                 isMeasuring = false
