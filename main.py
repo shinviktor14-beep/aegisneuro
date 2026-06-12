@@ -78,6 +78,7 @@ class WatchDataBridge:
         self.buffer = WatchDataBuffer()
         self.inbox_path = self._resolve_inbox_path()
         self._read_offset = 0
+        self._start_runtime_bridge()
 
     def latest_rr_intervals(self):
         self.refresh()
@@ -107,6 +108,8 @@ class WatchDataBridge:
         accepted = self.buffer.ingest(payload)
         if accepted:
             log.info("Watch packet accepted: %s RR intervals", accepted)
+        elif payload.get("heart_rate_bpm") or payload.get("bpm"):
+            log.info("Watch HR packet accepted without IBI")
 
     def _resolve_inbox_path(self):
         try:
@@ -124,6 +127,21 @@ class WatchDataBridge:
         except Exception as exc:  # noqa: BLE001
             log.warning("Watch inbox path unavailable: %s", exc)
             return None
+
+    def _start_runtime_bridge(self):
+        if platform != "android":
+            return
+        try:
+            from jnius import autoclass
+
+            PythonActivity = autoclass("org.kivy.android.PythonActivity")
+            RuntimeBridge = autoclass("org.aegisneuro.aegisneuro.AegisWatchRuntimeBridge")
+            activity = PythonActivity.mActivity
+            if activity is not None:
+                RuntimeBridge.start(activity)
+                log.info("Watch runtime bridge started")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Watch runtime bridge unavailable: %s", exc)
 
 
 # ==============================================================================
@@ -655,6 +673,7 @@ class AegisNeuroMobileScreen(MDScreen):
         bpm = watch_status["heart_rate_bpm"]
         connected = watch_status["connected"]
         quality = watch_status["quality"]
+        self._update_metric_display(watch_status)
 
         if rr_count >= 10:
             self.status_card.md_bg_color = [0.08, 0.16, 0.1, 1]
@@ -676,13 +695,20 @@ class AegisNeuroMobileScreen(MDScreen):
             return
 
         rr_data = self.watch_bridge.latest_rr_intervals()
+        watch_status = self.watch_bridge.status()
+        self._update_metric_display(watch_status)
+
         if len(rr_data) < 10:
-            watch_status = self.watch_bridge.status()
             bpm = watch_status["heart_rate_bpm"]
+            rr_count = watch_status["rr_count"]
+            quality = watch_status["quality"]
             self.status_card.md_bg_color = [0.3, 0.2, 0.05, 1]
             self.status_label.text = "Galaxy Watch4"
             if bpm:
-                self.status_detail_label.text = f"HR: {bpm} bpm\nIBI/R-R: {len(rr_data)}/10 для HRV."
+                self.status_detail_label.text = (
+                    f"HR: {bpm} bpm\n"
+                    f"IBI/R-R: {rr_count}/10 для HRV, качество: {quality}"
+                )
             else:
                 self.status_detail_label.text = "Ожидаем поток HR/IBI с часов. Камера и фонарик отключены."
             return
@@ -750,11 +776,12 @@ class AegisNeuroMobileScreen(MDScreen):
         self.old_stress = self.current_stress
         self.old_rmssd = self.current_rmssd
 
-    def _update_metric_display(self):
+    def _update_metric_display(self, watch_status=None):
         self.stress_value_label.text = str(int(self.current_stress))
         self.rmssd_value_label.text = str(int(self.current_rmssd))
         
-        watch_status = self.watch_bridge.status()
+        if watch_status is None:
+            watch_status = self.watch_bridge.status()
         bpm = watch_status.get("heart_rate_bpm")
         if bpm:
             self.current_bpm = bpm
