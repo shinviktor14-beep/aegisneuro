@@ -367,7 +367,9 @@ class AegisNeuroMobileScreen(MDScreen):
             size_hint_x=0.5,
             padding=[0, dp(8), 0, dp(8)],
             spacing=dp(4),
+            size_hint_y=None,
         )
+        stress_col.bind(minimum_height=stress_col.setter('height'))
         self.stress_value_label = MDLabel(
             text="--",
             halign="center",
@@ -405,7 +407,9 @@ class AegisNeuroMobileScreen(MDScreen):
             size_hint_x=0.5,
             padding=[0, dp(8), 0, dp(8)],
             spacing=dp(4),
+            size_hint_y=None,
         )
+        rmssd_col.bind(minimum_height=rmssd_col.setter('height'))
         self.rmssd_value_label = MDLabel(
             text="--",
             halign="center",
@@ -451,7 +455,9 @@ class AegisNeuroMobileScreen(MDScreen):
             size_hint_x=0.33,
             padding=[0, dp(8), 0, dp(8)],
             spacing=dp(4),
+            size_hint_y=None,
         )
+        hr_col.bind(minimum_height=hr_col.setter('height'))
         self.hr_value_label = MDLabel(
             text="--",
             halign="center",
@@ -489,7 +495,9 @@ class AegisNeuroMobileScreen(MDScreen):
             size_hint_x=0.33,
             padding=[0, dp(8), 0, dp(8)],
             spacing=dp(4),
+            size_hint_y=None,
         )
+        freq_col.bind(minimum_height=freq_col.setter('height'))
         self.freq_value_label = MDLabel(
             text="--",
             halign="center",
@@ -527,7 +535,9 @@ class AegisNeuroMobileScreen(MDScreen):
             size_hint_x=0.34,
             padding=[0, dp(8), 0, dp(8)],
             spacing=dp(4),
+            size_hint_y=None,
         )
+        storm_col.bind(minimum_height=storm_col.setter('height'))
         self.storm_value_label = MDLabel(
             text="--",
             halign="center",

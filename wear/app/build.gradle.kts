@@ -8,7 +8,7 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "org.aegisneuro.watch"
+        applicationId = "org.aegisneuro.aegisneuro"
         minSdk = 30
         targetSdk = 35
         versionCode = 1
