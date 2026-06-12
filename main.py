@@ -58,29 +58,26 @@ log.info(f"=== AegisNeuro started === platform={platform} log_path={log_path}")
 # Импортируем ядра из пакета aegis
 from aegis.core import AegisRLBrain, StormPredictor
 from aegis.update_checker import check_for_update
-from aegis_ppg_processor import AegisPPGProcessor
 from aegis_audio_engine import AegisAudioEngine
-from android_camera import AndroidCameraBridge
 
 APP_VERSION = "1.0.0"
 
 
 # ==============================================================================
-# МОСТ ДЛЯ УПРАВЛЕНИЯ АППАРАТУРОЙ (фонарик, будущее: BLE)
+# МОСТ ДЛЯ ДАННЫХ GALAXY WATCH
 # ==============================================================================
-class AndroidHardwareBridge:
-    """Тонкая прослойка над AndroidCameraBridge.set_flash().
-    На десктопе — печатает в лог (для отладки UI)."""
+class WatchDataBridge:
+    """Заготовка канала данных Wear OS / Galaxy Watch.
 
-    def __init__(self, camera_bridge: AndroidCameraBridge):
-        self.camera_bridge = camera_bridge
+    Следующий шаг: заменить mock-данные потоками Health Services с часов.
+    """
 
-    def set_flashlight(self, turn_on: bool = True) -> bool:
-        try:
-            return self.camera_bridge.set_flash(bool(turn_on))
-        except Exception as exc:  # noqa: BLE001
-            print(f"[Aegis-Hardware] set_flashlight: {exc}")
-            return False
+    def __init__(self):
+        self.connected = False
+        self.last_rr_intervals = []
+
+    def latest_rr_intervals(self):
+        return list(self.last_rr_intervals)
 
 
 # ==============================================================================
@@ -91,11 +88,8 @@ class AegisNeuroMobileScreen(MDScreen):
         super().__init__(**kwargs)
 
         self.ai_brain = AegisRLBrain()
-        self.ppg_processor = AegisPPGProcessor()
         self.audio_engine = AegisAudioEngine()
-        self.camera_bridge = AndroidCameraBridge()
-        self.camera_bridge.request_permission()
-        self.hardware_bridge = AndroidHardwareBridge(self.camera_bridge)
+        self.watch_bridge = WatchDataBridge()
         self.predictor = StormPredictor()
 
         self.current_stress = 120.0
@@ -108,8 +102,6 @@ class AegisNeuroMobileScreen(MDScreen):
         self.gender_profile = "male"
         self.scan_timer = 0
         self.is_scanning = False
-        self.is_preparing_scan = False
-        self.prepare_scan_attempts = 0
 
         self.audio_engine.start_tone()
         self.build_ui()
@@ -411,7 +403,7 @@ class AegisNeuroMobileScreen(MDScreen):
         )
 
         self.action_btn = MDRaisedButton(
-            text="ЗАПУСТИТЬ ЗАМЕР",
+            text="ПРОВЕРИТЬ WATCH",
             pos_hint={"center_x": 0.5},
             md_bg_color=[0, 0.78, 0.35, 1],
             size_hint_x=1.0,
@@ -432,7 +424,6 @@ class AegisNeuroMobileScreen(MDScreen):
 
         # ── Фоновые задачи ──
         Clock.schedule_interval(self.mobile_lifecycle_loop, 1.0)
-        Clock.schedule_interval(self._tick_ppg, 1.0 / 30.0)
         Clock.schedule_once(self._check_for_update, 3.0)
 
     # ── Обновление цвета метрик в зависимости от значений ──
@@ -456,100 +447,34 @@ class AegisNeuroMobileScreen(MDScreen):
         else:
             self.rmssd_value_label.text_color = [1, 0.35, 0.3, 1]
 
-    def _tick_ppg(self, dt):
-        """30 раз в секунду: забираем у камеры последнее «среднее красное» и скармливаем в PPG."""
-        if not self.is_scanning:
-            return
-        try:
-            mean_red = self.camera_bridge.get_mean_red()
-        except Exception:
-            return
-        if mean_red <= 0.0:
-            return
-        try:
-            self.ppg_processor.process_frame(mean_red)
-        except Exception as exc:
-            print(f"[Aegis-PPG tick] {exc}")
-
-    def _show_camera_not_ready(self):
-        self.status_card.md_bg_color = [0.35, 0.12, 0.12, 1]
-        self.status_label.text = "⚠️ Камера не готова"
-        self.status_detail_label.text = (
-            f"{self.camera_bridge.get_status_text()}\n"
-            "Подождите или перезапустите приложение"
-        )
-        self.action_btn.disabled = False
-        self.action_btn.md_bg_color = [0, 0.78, 0.35, 1]
-        self.action_btn.text = "ЗАПУСТИТЬ ЗАМЕР"
-        self.is_preparing_scan = False
-        self.hardware_bridge.set_flashlight(turn_on=False)
-        self.camera_bridge.stop_capture()
-
     def start_scan(self, *args):
-        if self.is_scanning or self.is_preparing_scan:
+        if self.is_scanning:
             return
 
-        self.is_preparing_scan = True
-        self.prepare_scan_attempts = 0
-        self.action_btn.disabled = True
-        self.action_btn.md_bg_color = [0.3, 0.3, 0.3, 1]
-        self.action_btn.text = "ГОТОВИМ КАМЕРУ..."
-        self.status_card.md_bg_color = [0.06, 0.14, 0.22, 1]
-        self.status_label.text = "Подготовка камеры..."
-        self.status_detail_label.text = "Камера и фонарик включатся только на время диагностики"
+        rr_data = self.watch_bridge.latest_rr_intervals()
+        if not rr_data:
+            self.status_card.md_bg_color = [0.3, 0.2, 0.05, 1]
+            self.status_label.text = "Galaxy Watch4"
+            self.status_detail_label.text = "Ожидаем поток HR/IBI с часов. Камера и фонарик отключены."
+            return
 
-        try:
-            self.camera_bridge.stop_capture()
-            self.camera_bridge.start_capture()
-            debug_dir = self.camera_bridge.enable_debug_frames(count=5, every_n_frames=15)
-            print(f"[Aegis-Camera] debug frames: {debug_dir}")
-        except Exception as exc:
-            print(f"[Aegis-Camera] start_scan: {exc}")
-
-        Clock.schedule_interval(self._finish_scan_preparation, 0.2)
-
-    def _finish_scan_preparation(self, dt):
-        if not self.is_preparing_scan:
-            return False
-
-        self.prepare_scan_attempts += 1
-        if not self.camera_bridge.is_ready():
-            if self.prepare_scan_attempts < 25:
-                self.status_detail_label.text = (
-                    f"Открываем камеру... {self.prepare_scan_attempts}"
-                )
-                return True
-            self._show_camera_not_ready()
-            return False
-
-        self.ppg_processor.red_values.clear()
-        self.ppg_processor.timestamps.clear()
-        if not self.hardware_bridge.set_flashlight(turn_on=True):
-            self._show_camera_not_ready()
-            return False
-
-        self.scan_timer = 15
+        self.scan_timer = 1
         self.is_scanning = True
-        self.is_preparing_scan = False
 
         self.status_card.md_bg_color = [0.06, 0.14, 0.22, 1]
-        self.status_label.text = "Идёт замер..."
-        self.status_detail_label.text = "Удерживайте палец неподвижно на камере"
+        self.status_label.text = "Идёт Watch-замер..."
+        self.status_detail_label.text = "Анализируем данные Galaxy Watch4"
 
         self.action_btn.text = "ИДЁТ ЗАМЕР..."
-        return False
 
     def on_scan_complete(self):
-        self.hardware_bridge.set_flashlight(turn_on=False)
         self.is_scanning = False
-        self.is_preparing_scan = False
-        self.camera_bridge.stop_capture()
 
         self.action_btn.disabled = False
         self.action_btn.md_bg_color = [0, 0.78, 0.35, 1]
-        self.action_btn.text = "ЗАПУСТИТЬ ЗАМЕР"
+        self.action_btn.text = "ПРОВЕРИТЬ WATCH"
 
-        rr_data = self.ppg_processor.get_rr_intervals()
+        rr_data = self.watch_bridge.latest_rr_intervals()
 
         # Анализ через канонический StormPredictor.analyze()
         prediction = self.predictor.analyze(rr_data)
@@ -613,7 +538,7 @@ class AegisNeuroMobileScreen(MDScreen):
     def mobile_lifecycle_loop(self, dt):
         if self.scan_timer > 0:
             self.scan_timer -= 1
-            self.status_label.text = "Идёт замер..."
+            self.status_label.text = "Идёт Watch-замер..."
             self.status_detail_label.text = f"Осталось: {self.scan_timer} сек."
             if self.scan_timer == 0:
                 self.on_scan_complete()
@@ -651,30 +576,22 @@ class AegisNeuroMobileApp(MDApp):
         return AegisNeuroMobileScreen()
 
     def on_start(self):
-        """Activity создана. Камеру не открываем до старта диагностики."""
+        """Activity создана. Сенсоры часов подключаются отдельным Wear OS модулем."""
 
     def on_resume(self):
-        """После разблокировки камера остается выключенной до диагностики."""
+        """После разблокировки камера не используется."""
 
     def on_pause(self):
         screen = self.root
-        if screen is not None and hasattr(screen, 'camera_bridge'):
+        if screen is not None:
             screen.is_scanning = False
-            screen.is_preparing_scan = False
             screen.scan_timer = 0
-            screen.hardware_bridge.set_flashlight(turn_on=False)
-            screen.camera_bridge.stop_capture()
         return True
 
     def on_stop(self):
         screen = self.root
         if screen is None:
             return
-        try:
-            if getattr(screen, "camera_bridge", None) is not None:
-                screen.camera_bridge.stop_capture()
-        except Exception as exc:
-            print(f"[Aegis-System] camera stop: {exc}")
         try:
             if getattr(screen, "audio_engine", None) is not None:
                 screen.audio_engine.stop_tone()

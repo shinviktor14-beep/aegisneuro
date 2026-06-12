@@ -1,0 +1,71 @@
+# AegisNeuro: план перехода на Samsung Galaxy Watch4
+
+## Цель
+
+Камера и фонарик больше не используются. Источник биосигнала переносится на Galaxy Watch4.
+
+## Какие данные нужны в первую очередь
+
+1. `HEART_RATE_BPM`
+   - Базовый пульс.
+   - Нужен для текущего состояния нагрузки и контроля артефактов.
+
+2. `IBI` / R-R интервалы, если доступны на устройстве через Health Services или Samsung API
+   - Главный сигнал для RMSSD и индекса стресса.
+   - Если прямые IBI недоступны, используем HR как fallback, но HRV будет хуже.
+
+3. Motion context: accelerometer / шаги / activity state
+   - Нужен, чтобы отбраковывать HR/IBI во время движения.
+   - Для диагностики AegisNeuro желательно состояние покоя 60-120 секунд.
+
+## Второй этап
+
+1. `SPO2`, если доступно
+   - Не основной стресс-маркер, но полезно для контекста восстановления.
+
+2. Sleep / passive history
+   - Для утреннего baseline и долгосрочного профиля.
+
+3. ECG/BP/BIA
+   - Не закладывать в MVP: эти данные часто ограничены Samsung Health Monitor, регионом, разрешениями и не всегда доступны стороннему приложению.
+
+## Архитектура
+
+1. Wear OS app на часах
+   - Kotlin/Compose.
+   - Считывает HR/IBI через Health Services.
+   - Показывает простой экран: статус сенсора, пульс, качество сигнала.
+
+2. Phone companion в текущем AegisNeuro
+   - Kivy/Python остается экраном управления, аудио и AI-контуром.
+   - Принимает поток с часов и подает R-R интервалы в существующий StormPredictor/RL/audio.
+
+3. Канал связи часы -> телефон
+   - Wear OS Data Layer API.
+   - Для live-потока: MessageClient.
+   - Для последнего состояния/сводки: DataClient.
+
+## MVP-поток
+
+1. Пользователь запускает AegisNeuro на телефоне.
+2. Пользователь запускает AegisNeuro Sensor на Watch4.
+3. Часы начинают foreground measurement.
+4. Каждые 1-2 секунды часы отправляют:
+   - timestamp
+   - heart_rate_bpm
+   - ibi_ms array, если есть
+   - motion/activity quality flag
+5. Телефон принимает пакет.
+6. AegisNeuro рассчитывает RMSSD, стресс-индекс, прогноз шторма.
+7. RL-мозг выбирает частоту аудио.
+
+## Следующая инженерная задача
+
+Создать минимальный Wear OS модуль `wear/`:
+
+- `MainActivity.kt`
+- Health Services permissions
+- MeasureClient / ExerciseClient поток HR
+- Data Layer отправка JSON-пакетов на телефон
+
+После этого добавить в телефонный app native bridge/receiver, который будет передавать данные в `WatchDataBridge`.
