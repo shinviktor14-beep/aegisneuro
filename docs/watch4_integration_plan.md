@@ -101,11 +101,20 @@
 
 Добавлен отдельный Gradle-модуль `wear/`:
 
+- standalone Gradle project in `wear/`
+- app module: `wear/app`
 - `org.aegisneuro.watch.MainActivity`
 - Health Services `MeasureClient`
 - Data Layer `MessageClient`
 - Data Layer path: `/aegis/watch/vitals`
 - отправляемый JSON совместим с `watch_payloads.jsonl`
+
+Сборка часов после установки Gradle/Android Studio:
+
+```powershell
+cd wear
+gradle :app:assembleDebug
+```
 
 Текущий поток часов:
 

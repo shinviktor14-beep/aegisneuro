@@ -15,4 +15,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "AegisNeuroWatch"
-include(":wear")
+include(":app")
