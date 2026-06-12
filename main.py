@@ -82,6 +82,9 @@ class WatchDataBridge:
             "node_connected": platform != "android",
             "node_count": 0,
             "node_names": [],
+            "watch_app_ready": platform != "android",
+            "watch_app_node_count": 0,
+            "watch_app_node_names": [],
             "node_error": None,
         }
         self._start_runtime_bridge()
@@ -109,10 +112,16 @@ class WatchDataBridge:
             raw_status = ConnectionBridge.getStatusJson(activity)
             payload = json.loads(str(raw_status))
             nodes = payload.get("nodes") or []
+            capability_nodes = payload.get("capability_nodes") or []
             self._last_connection_status = {
                 "node_connected": bool(payload.get("connected")),
                 "node_count": int(payload.get("node_count") or 0),
                 "node_names": [node.get("display_name", "") for node in nodes],
+                "watch_app_ready": bool(payload.get("watch_app_ready")),
+                "watch_app_node_count": int(payload.get("capability_node_count") or 0),
+                "watch_app_node_names": [
+                    node.get("display_name", "") for node in capability_nodes
+                ],
                 "node_error": payload.get("error"),
             }
         except Exception as exc:  # noqa: BLE001
@@ -121,6 +130,9 @@ class WatchDataBridge:
                 "node_connected": False,
                 "node_count": 0,
                 "node_names": [],
+                "watch_app_ready": False,
+                "watch_app_node_count": 0,
+                "watch_app_node_names": [],
                 "node_error": str(exc),
             }
         return dict(self._last_connection_status)
@@ -911,6 +923,8 @@ class AegisNeuroMobileScreen(MDScreen):
         connected = watch_status["connected"]
         node_connected = watch_status.get("node_connected", False)
         node_names = ", ".join(watch_status.get("node_names") or [])
+        watch_app_ready = watch_status.get("watch_app_ready", False)
+        watch_app_names = ", ".join(watch_status.get("watch_app_node_names") or [])
         quality = watch_status["quality"]
         self._update_metric_display(watch_status)
 
@@ -921,14 +935,19 @@ class AegisNeuroMobileScreen(MDScreen):
             self.status_detail_label.text = f"{bpm_text}\nIBI/R-R: {rr_count} интервалов, качество: {quality}"
         elif connected:
             self.status_card.md_bg_color = [0.3, 0.2, 0.05, 1]
-            self.status_label.text = "Galaxy Watch4 подключены"
+            self.status_label.text = "Aegis Watch передаёт HR"
             bpm_text = f"HR: {bpm} bpm" if bpm else "HR получаем"
             self.status_detail_label.text = f"{bpm_text}\nДля HRV нужно минимум 10 IBI, сейчас: {rr_count}"
+        elif watch_app_ready:
+            self.status_card.md_bg_color = [0.3, 0.2, 0.05, 1]
+            self.status_label.text = "Aegis Watch найден"
+            device_text = watch_app_names or "AegisNeuro Watch"
+            self.status_detail_label.text = f"{device_text}\nЗапустите измерение на часах и разрешите BODY_SENSORS"
         elif node_connected:
             self.status_card.md_bg_color = [0.3, 0.2, 0.05, 1]
-            self.status_label.text = "Часы найдены"
+            self.status_label.text = "Часы подключены, модуля нет"
             device_text = node_names or "Wear OS"
-            self.status_detail_label.text = f"{device_text}\nЖдём поток HR/IBI от AegisNeuro Watch"
+            self.status_detail_label.text = f"{device_text}\nAegisNeuro Watch-компонент не найден на часах"
         else:
             self.status_card.md_bg_color = [0.08, 0.12, 0.18, 1]
             self.status_label.text = "Ожидаем Galaxy Watch4"
@@ -963,6 +982,14 @@ class AegisNeuroMobileScreen(MDScreen):
             self.status_card.md_bg_color = [0.3, 0.2, 0.05, 1]
             self.status_label.text = "Часы не подключены"
             self.status_detail_label.text = "Проверьте Galaxy Watch4 в Galaxy Wearable и дождитесь Wear OS-соединения."
+            return
+
+        if not watch_status.get("watch_app_ready", False) and not watch_status["connected"]:
+            self.status_card.md_bg_color = [0.3, 0.2, 0.05, 1]
+            self.status_label.text = "Модуль Watch не найден"
+            self.status_detail_label.text = (
+                "Телефон видит часы, но не видит AegisNeuro Watch-компонент с capability aegisneuro_vitals."
+            )
             return
 
         if len(rr_data) < 10:
