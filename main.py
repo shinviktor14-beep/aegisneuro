@@ -78,6 +78,12 @@ class WatchDataBridge:
         self.buffer = WatchDataBuffer()
         self.inbox_path = self._resolve_inbox_path()
         self._read_offset = 0
+        self._last_connection_status = {
+            "node_connected": platform != "android",
+            "node_count": 0,
+            "node_names": [],
+            "node_error": None,
+        }
         self._start_runtime_bridge()
 
     def latest_rr_intervals(self):
@@ -86,7 +92,38 @@ class WatchDataBridge:
 
     def status(self):
         self.refresh()
-        return self.buffer.summary()
+        status = self.buffer.summary()
+        status.update(self.connection_status())
+        return status
+
+    def connection_status(self):
+        if platform != "android":
+            return dict(self._last_connection_status)
+
+        try:
+            from jnius import autoclass
+
+            PythonActivity = autoclass("org.kivy.android.PythonActivity")
+            ConnectionBridge = autoclass("org.aegisneuro.aegisneuro.AegisWatchConnectionBridge")
+            activity = PythonActivity.mActivity
+            raw_status = ConnectionBridge.getStatusJson(activity)
+            payload = json.loads(str(raw_status))
+            nodes = payload.get("nodes") or []
+            self._last_connection_status = {
+                "node_connected": bool(payload.get("connected")),
+                "node_count": int(payload.get("node_count") or 0),
+                "node_names": [node.get("display_name", "") for node in nodes],
+                "node_error": payload.get("error"),
+            }
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Watch connection check failed: %s", exc)
+            self._last_connection_status = {
+                "node_connected": False,
+                "node_count": 0,
+                "node_names": [],
+                "node_error": str(exc),
+            }
+        return dict(self._last_connection_status)
 
     def refresh(self):
         if self.inbox_path is None or not self.inbox_path.exists():
@@ -236,6 +273,10 @@ class AegisNeuroMobileScreen(MDScreen):
         self.is_scanning = False
         self.current_bpm = 0
         self.storm_prob = 0
+        self.audio_calibration_ok = False
+        self._audio_device_name = None
+        self._headphone_check_running = False
+        self._headphone_check_played = False
 
         self.audio_engine.start_tone()
         self.build_ui()
@@ -400,8 +441,29 @@ class AegisNeuroMobileScreen(MDScreen):
         self.audio_status_detail_label.bind(
             texture_size=lambda inst, ts: setattr(inst, 'height', max(dp(22), ts[1]))
         )
+        audio_check_row = MDBoxLayout(
+            orientation='horizontal',
+            size_hint_y=None,
+            height=dp(48),
+            spacing=dp(10),
+        )
+        self.audio_test_btn = MDRaisedButton(
+            text="ТЕСТ 4.7 ГЦ",
+            md_bg_color=[0.18, 0.45, 0.72, 1],
+            size_hint_x=0.5,
+            on_release=self.start_headphone_check,
+        )
+        self.audio_confirm_btn = MDRaisedButton(
+            text="СЛЫШУ Л/П",
+            md_bg_color=[0.18, 0.55, 0.26, 1],
+            size_hint_x=0.5,
+            on_release=self.confirm_headphone_check,
+        )
+        audio_check_row.add_widget(self.audio_test_btn)
+        audio_check_row.add_widget(self.audio_confirm_btn)
         self.audio_status_card.add_widget(self.audio_status_label)
         self.audio_status_card.add_widget(self.audio_status_detail_label)
+        self.audio_status_card.add_widget(audio_check_row)
         content.add_widget(self.audio_status_card)
 
         # ── 3. Селектор профиля ──
@@ -772,13 +834,74 @@ class AegisNeuroMobileScreen(MDScreen):
         else:
             self.storm_value_label.text_color = [1, 0.35, 0.3, 1]
 
+    def start_headphone_check(self, *args):
+        audio_status = self.audio_bridge.status()
+        if not audio_status["connected"]:
+            self.audio_calibration_ok = False
+            self.audio_status_card.md_bg_color = [0.28, 0.16, 0.05, 1]
+            self.audio_status_label.text = "Сначала подключите наушники"
+            self.audio_status_detail_label.text = "Тест 4.7 Гц доступен только через стерео-наушники"
+            return
+
+        self.audio_calibration_ok = False
+        self._headphone_check_running = True
+        self._headphone_check_played = True
+        self.audio_engine.start_headphone_check(4.7, 9.0)
+        self.audio_status_card.md_bg_color = [0.06, 0.14, 0.22, 1]
+        self.audio_status_label.text = "Идёт тест наушников"
+        self.audio_status_detail_label.text = "Левое ухо, правое ухо, затем бинауральная разность 4.7 Гц"
+        Clock.schedule_once(self._finish_headphone_check, 9.5)
+
+    def _finish_headphone_check(self, dt=None):
+        self._headphone_check_running = False
+        if not self.audio_calibration_ok:
+            self.audio_status_card.md_bg_color = [0.28, 0.16, 0.05, 1]
+            self.audio_status_label.text = "Подтвердите стерео"
+            self.audio_status_detail_label.text = "Нажмите «СЛЫШУ Л/П», если левый и правый канал были раздельно"
+
+    def confirm_headphone_check(self, *args):
+        audio_status = self.audio_bridge.status()
+        if not self._headphone_check_played:
+            self.audio_calibration_ok = False
+            self.audio_status_card.md_bg_color = [0.28, 0.16, 0.05, 1]
+            self.audio_status_label.text = "Сначала запустите тест"
+            self.audio_status_detail_label.text = "Нужно услышать левый канал, правый канал и 4.7 Гц"
+            return
+
+        if not audio_status["connected"]:
+            self.audio_calibration_ok = False
+            self.audio_status_card.md_bg_color = [0.28, 0.16, 0.05, 1]
+            self.audio_status_label.text = "Нужны наушники"
+            self.audio_status_detail_label.text = "Подключите стерео-наушники и повторите тест"
+            return
+
+        self.audio_calibration_ok = True
+        self._audio_device_name = audio_status["device_name"]
+        self.audio_status_card.md_bg_color = [0.08, 0.16, 0.1, 1]
+        self.audio_status_label.text = "Стерео 4.7 Гц проверено"
+        self.audio_status_detail_label.text = f"{audio_status['device_name']}: левый и правый канал подтверждены"
+
     def refresh_audio_status(self, dt=None):
         audio_status = self.audio_bridge.status()
+        if self._headphone_check_running:
+            return audio_status
+
         if audio_status["connected"]:
+            if self._audio_device_name and self._audio_device_name != audio_status["device_name"]:
+                self.audio_calibration_ok = False
+                self._headphone_check_played = False
+            self._audio_device_name = audio_status["device_name"]
             self.audio_status_card.md_bg_color = [0.08, 0.16, 0.1, 1]
-            self.audio_status_label.text = "Наушники подключены"
-            self.audio_status_detail_label.text = audio_status["device_name"]
+            if self.audio_calibration_ok:
+                self.audio_status_label.text = "Стерео 4.7 Гц готово"
+                self.audio_status_detail_label.text = audio_status["device_name"]
+            else:
+                self.audio_status_label.text = "Наушники подключены"
+                self.audio_status_detail_label.text = "Запустите тест 4.7 Гц и подтвердите левый/правый канал"
         else:
+            self.audio_calibration_ok = False
+            self._audio_device_name = None
+            self._headphone_check_played = False
             self.audio_status_card.md_bg_color = [0.28, 0.16, 0.05, 1]
             self.audio_status_label.text = "Нужны наушники"
             self.audio_status_detail_label.text = "Бинауральные частоты работают только в стерео-наушниках"
@@ -792,6 +915,8 @@ class AegisNeuroMobileScreen(MDScreen):
         rr_count = watch_status["rr_count"]
         bpm = watch_status["heart_rate_bpm"]
         connected = watch_status["connected"]
+        node_connected = watch_status.get("node_connected", False)
+        node_names = ", ".join(watch_status.get("node_names") or [])
         quality = watch_status["quality"]
         self._update_metric_display(watch_status)
 
@@ -805,10 +930,15 @@ class AegisNeuroMobileScreen(MDScreen):
             self.status_label.text = "Galaxy Watch4 подключены"
             bpm_text = f"HR: {bpm} bpm" if bpm else "HR получаем"
             self.status_detail_label.text = f"{bpm_text}\nДля HRV нужно минимум 10 IBI, сейчас: {rr_count}"
+        elif node_connected:
+            self.status_card.md_bg_color = [0.3, 0.2, 0.05, 1]
+            self.status_label.text = "Часы найдены"
+            device_text = node_names or "Wear OS"
+            self.status_detail_label.text = f"{device_text}\nЖдём поток HR/IBI от AegisNeuro Watch"
         else:
             self.status_card.md_bg_color = [0.08, 0.12, 0.18, 1]
             self.status_label.text = "Ожидаем Galaxy Watch4"
-            self.status_detail_label.text = "Нужен поток HR и IBI/R-R с Wear OS"
+            self.status_detail_label.text = "Проверьте Bluetooth/Galaxy Wearable и поток HR/IBI с Wear OS"
 
     def start_scan(self, *args):
         if self.is_scanning:
@@ -825,6 +955,20 @@ class AegisNeuroMobileScreen(MDScreen):
             self.status_detail_label.text = (
                 "Для нейрорегуляции нужен стерео-аудиовыход: проводные, USB или Bluetooth-наушники."
             )
+            return
+
+        if not self.audio_calibration_ok:
+            self.status_card.md_bg_color = [0.3, 0.2, 0.05, 1]
+            self.status_label.text = "Проверьте стерео 4.7 Гц"
+            self.status_detail_label.text = (
+                "Нажмите «ТЕСТ 4.7 ГЦ», проверьте левое/правое ухо и подтвердите «СЛЫШУ Л/П»."
+            )
+            return
+
+        if not watch_status.get("node_connected", False) and not watch_status["connected"]:
+            self.status_card.md_bg_color = [0.3, 0.2, 0.05, 1]
+            self.status_label.text = "Часы не подключены"
+            self.status_detail_label.text = "Проверьте Galaxy Watch4 в Galaxy Wearable и дождитесь Wear OS-соединения."
             return
 
         if len(rr_data) < 10:

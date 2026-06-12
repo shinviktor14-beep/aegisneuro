@@ -36,6 +36,10 @@ class AegisAudioEngine:
         self.carrier_freq = 200.0
         self.binaural_beat = 8.0
         self.volume = 0.5
+        self.channel_check_beat = 4.7
+        self._render_mode = "binaural"
+        self._mode_started_at = 0.0
+        self._mode_duration = 0.0
 
         self.is_playing = False
         self.is_running = False
@@ -52,6 +56,16 @@ class AegisAudioEngine:
         """Динамическое изменение терапевтической частоты ИИ прямо во время звучания."""
         self.binaural_beat = float(target_freq)
         log.info(f"Частота бинаурального стимула перестроена на: {self.binaural_beat} Гц")
+
+    def start_headphone_check(self, target_freq: float = 4.7, duration: float = 9.0) -> None:
+        """Воспроизводит тест: левый канал, правый канал, затем бинауральная разность."""
+        self.channel_check_beat = float(target_freq)
+        self._render_mode = "headphone_check"
+        self._mode_started_at = time.monotonic()
+        self._mode_duration = max(float(duration), 3.0)
+        if not self.is_playing:
+            self.start_tone()
+        log.info("Проверка наушников запущена: %.2f Гц", self.channel_check_beat)
 
     def start_tone(self) -> None:
         if self.is_playing:
@@ -133,20 +147,44 @@ class AegisAudioEngine:
                 log.debug("close_native: pyaudio terminate error", exc_info=True)
             self._p = None
 
+    def _render_stereo(self, chunk_size: int, start_time: float) -> np.ndarray:
+        t = start_time + np.arange(chunk_size) / self.sample_rate
+        carrier = self.carrier_freq
+
+        if self._render_mode == "headphone_check":
+            elapsed = time.monotonic() - self._mode_started_at
+            if elapsed >= self._mode_duration:
+                self._render_mode = "binaural"
+            elif elapsed < self._mode_duration / 3.0:
+                stereo = np.zeros((chunk_size, 2), dtype=np.float32)
+                stereo[:, 0] = np.sin(2 * np.pi * carrier * t) * self.volume
+                return stereo
+            elif elapsed < 2.0 * self._mode_duration / 3.0:
+                stereo = np.zeros((chunk_size, 2), dtype=np.float32)
+                stereo[:, 1] = np.sin(2 * np.pi * carrier * t) * self.volume
+                return stereo
+            else:
+                freq_left = carrier
+                freq_right = carrier + self.channel_check_beat
+                stereo = np.empty((chunk_size, 2), dtype=np.float32)
+                stereo[:, 0] = np.sin(2 * np.pi * freq_left * t) * self.volume
+                stereo[:, 1] = np.sin(2 * np.pi * freq_right * t) * self.volume
+                return stereo
+
+        freq_left = carrier - (self.binaural_beat / 2.0)
+        freq_right = carrier + (self.binaural_beat / 2.0)
+        stereo = np.empty((chunk_size, 2), dtype=np.float32)
+        stereo[:, 0] = np.sin(2 * np.pi * freq_left * t) * self.volume
+        stereo[:, 1] = np.sin(2 * np.pi * freq_right * t) * self.volume
+        return stereo
+
     def _loop_android(self) -> None:
         if not self._open_android_track():
             return
         chunk_size = 1024
         start_time = 0.0
         while self.is_running:
-            t = start_time + np.arange(chunk_size) / self.sample_rate
-            freq_left = self.carrier_freq - (self.binaural_beat / 2.0)
-            freq_right = self.carrier_freq + (self.binaural_beat / 2.0)
-            wave_left = np.sin(2 * np.pi * freq_left * t)
-            wave_right = np.sin(2 * np.pi * freq_right * t)
-            stereo = np.empty((chunk_size, 2), dtype=np.float32)
-            stereo[:, 0] = wave_left * self.volume
-            stereo[:, 1] = wave_right * self.volume
+            stereo = self._render_stereo(chunk_size, start_time)
             try:
                 self._audio_track.write(
                     stereo.tobytes(),
@@ -186,14 +224,7 @@ class AegisAudioEngine:
         chunk_size = 1024
         start_time = 0.0
         while self.is_running:
-            t = start_time + np.arange(chunk_size) / self.sample_rate
-            freq_left = self.carrier_freq - (self.binaural_beat / 2.0)
-            freq_right = self.carrier_freq + (self.binaural_beat / 2.0)
-            wave_left = np.sin(2 * np.pi * freq_left * t)
-            wave_right = np.sin(2 * np.pi * freq_right * t)
-            stereo = np.empty((chunk_size, 2), dtype=np.float32)
-            stereo[:, 0] = wave_left * self.volume
-            stereo[:, 1] = wave_right * self.volume
+            stereo = self._render_stereo(chunk_size, start_time)
             try:
                 self._stream.write(stereo.tobytes())
             except Exception:  # noqa: BLE001
