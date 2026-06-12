@@ -41,6 +41,9 @@ android.accept_sdk_licenses = True
 # Разрешения
 android.permissions = WAKE_LOCK,MODIFY_AUDIO_SETTINGS,BLUETOOTH,BLUETOOTH_ADMIN,BLUETOOTH_SCAN,BLUETOOTH_CONNECT,ACCESS_FINE_LOCATION
 android.meta_data = com.google.android.gms.version=0
+android.add_src = android_src
+android.add_manifest_xml = android_manifest/aegis_watch_receiver.xml
+android.gradle_dependencies = com.google.android.gms:play-services-wearable:19.0.0
 
 # Зависимости для сборки
 # Kivy 2.3.1 поддерживает Python 3.8-3.13

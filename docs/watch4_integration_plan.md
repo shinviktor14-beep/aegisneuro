@@ -96,3 +96,32 @@
 - Для HRV-анализа и выбора звуковой частоты нужно минимум 10 валидных IBI/R-R интервалов.
 
 Важно: один BPM без IBI не подходит для RMSSD/стресс-индекса. В этом случае приложение покажет пульс, но не будет запускать диагностический контур.
+
+## Wear OS module status
+
+Добавлен отдельный Gradle-модуль `wear/`:
+
+- `org.aegisneuro.watch.MainActivity`
+- Health Services `MeasureClient`
+- Data Layer `MessageClient`
+- Data Layer path: `/aegis/watch/vitals`
+- отправляемый JSON совместим с `watch_payloads.jsonl`
+
+Текущий поток часов:
+
+```json
+{"source":"galaxy_watch4","timestamp_ms":1781270000000,"heart_rate_bpm":72,"ibi_ms":[],"quality":"hr_only"}
+```
+
+Телефонная часть получила native receiver:
+
+- `android_src/org/aegisneuro/aegisneuro/AegisWatchMessageService.java`
+- манифест-фрагмент `android_manifest/aegis_watch_receiver.xml`
+- Buildozer подключает `com.google.android.gms:play-services-wearable`
+- входящие сообщения дописываются в `watch_payloads.jsonl`, который читает `WatchDataBridge`
+
+Ограничение текущего этапа: стандартный Health Services `MeasureClient` надежно дает `HEART_RATE_BPM`, но не гарантирует R-R/IBI на всех Wear OS устройствах. Поэтому `ibi_ms` пока отправляется пустым массивом. Для полноценного HRV нужно следующим шагом добавить отдельный источник IBI:
+
+- Samsung Health/Samsung Privileged Health SDK, если доступен для проекта.
+- Сырой PPG/сенсорный поток, если устройство и разрешения позволяют.
+- Альтернативный сертифицированный внешний источник R-R, например BLE chest strap, как fallback.

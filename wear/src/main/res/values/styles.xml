@@ -1,0 +1,9 @@
+<resources>
+    <style name="AegisWatchTheme" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowBackground">#05070A</item>
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">#00FFCC</item>
+    </style>
+</resources>
