@@ -127,8 +127,15 @@ gradle :app:assembleDebug
 - `android_src/org/aegisneuro/aegisneuro/AegisWatchMessageService.java`
 - манифест-фрагмент `android_manifest/aegis_watch_receiver.xml`
 - receiver дописывает входящие сообщения в `watch_payloads.jsonl`, который читает `WatchDataBridge`
+- `buildozer.spec` подключает Java source, manifest fragment и `com.google.android.gms:play-services-wearable`
 
-Важно: receiver пока не включен в `buildozer.spec` автоматически. Первая попытка подключить `com.google.android.gms:play-services-wearable` к python-for-android сборке сломала CI `v43`, поэтому код receiver оставлен в репозитории, а включение будет отдельным шагом после проверки совместимости Gradle dependency в Buildozer.
+Если телефон показывает "Ожидаем Galaxy Watch4", значит одно из звеньев еще не работает:
+
+- на часах не установлено/не запущено приложение `Aegis Sensor`;
+- часы не имеют `BODY_SENSORS`;
+- часы не видят телефон как connected node Data Layer;
+- телефонная сборка установлена без `AegisWatchMessageService`;
+- Health Services отдает только HR без IBI, поэтому HRV-замер все еще не стартует.
 
 Ограничение текущего этапа: стандартный Health Services `MeasureClient` надежно дает `HEART_RATE_BPM`, но не гарантирует R-R/IBI на всех Wear OS устройствах. Поэтому `ibi_ms` пока отправляется пустым массивом. Для полноценного HRV нужно следующим шагом добавить отдельный источник IBI:
 

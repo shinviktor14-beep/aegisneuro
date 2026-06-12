@@ -186,3 +186,48 @@ jobs:
           files: bin/*.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-wear:
+    name: Build Wear OS APK
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    needs: test
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: Build Wear APK
+        working-directory: wear
+        run: gradle :app:assembleDebug
+
+      - name: Upload Wear APK as artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aegisneuro-watch-debug
+          path: wear/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish Wear APK to GitHub Release
+        if: success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}
+          name: "Build #${{ github.run_number }}"
+          body: "Auto-built APKs from commit ${{ github.sha }}"
+          files: wear/app/build/outputs/apk/debug/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
