@@ -16,7 +16,10 @@ import logging
 import os
 import sys
 import json
+import struct
+import time
 from pathlib import Path
+from collections import deque
 
 # ── Логирование в файл на Android ──
 def _setup_file_logging():
@@ -63,32 +66,652 @@ from aegis.update_checker import check_for_update
 from aegis_audio_engine import AegisAudioEngine
 
 APP_VERSION = "1.0.0"
-WATCH_APK_URL = "https://github.com/shinviktor14-beep/aegisneuro/releases/latest/download/app-debug.apk"
+
+# ==============================================================================
+# BLE СКАНЕР И КЛИЕНТ ЧАСТОТЫ СЕРДЦА (UUID 0x180D)
+# Использует pyjnius для доступа к Android BLE API напрямую
+# ==============================================================================
+
+# Стандартные BLE UUID для Heart Rate Service
+HR_SERVICE_UUID = "0000180d-0000-1000-8000-00805f9b34fb"
+HR_MEASUREMENT_CHAR_UUID = "00002a37-0000-1000-8000-00805f9b34fb"
+
+
+class BLEHeartRateScanner:
+    """Сканер BLE-устройств, транслирующих Heart Rate Service (0x180D).
+
+    Работает через pyjnius (Android BLE API). Поддерживает ЛЮБЫЕ устройства,
+    рекламующие HR Service — Polar H10, нагрудные датчики, фитнес-браслеты,
+    смарт-часы и т.д.
+    """
+
+    def __init__(self):
+        self.is_scanning = False
+        self.is_connected = False
+        self.connected_device_name = None
+        self.connected_device_address = None
+        self.current_heart_rate = 0
+        self.rr_intervals = deque(maxlen=200)
+        self._scan_results = []  # (name, address, has_hr_service, is_watch)
+        self._bluetooth_adapter = None
+        self._bluetooth_gatt = None
+        self._bluetooth_manager = None
+        self._hr_callback = None
+        self._scan_callback = None
+        self._gatt_callback = None
+        self._activity = None
+        self._initialized = False
+        self._watch_keywords = [
+            "watch", "galaxy watch", "gear", "wear", "huawei watch",
+            "ticwatch", "fossil watch", "amazfit", "gtr", "gts",
+        ]
+
+    def _init_android_ble(self):
+        """Инициализация Android BLE API через pyjnius."""
+        if self._initialized:
+            return True
+        if platform != "android":
+            log.warning("BLE: не Android — сканирование недоступно")
+            return False
+        try:
+            from jnius import autoclass, cast
+
+            self._autoclass = autoclass
+            self._cast = cast
+
+            PythonActivity = autoclass("org.kivy.android.PythonActivity")
+            self._activity = PythonActivity.mActivity
+            if not self._activity:
+                log.error("BLE: Activity недоступна")
+                return False
+
+            self._bluetooth_manager = self._activity.getSystemService("bluetooth")
+            if not self._bluetooth_manager:
+                log.error("BLE: BluetoothManager недоступен")
+                return False
+
+            self._BluetoothAdapter = autoclass("android.bluetooth.BluetoothAdapter")
+            self._BluetoothGatt = autoclass("android.bluetooth.BluetoothGatt")
+            self._BluetoothGattCallback = autoclass("android.bluetooth.BluetoothGattCallback")
+            self._BluetoothProfile = autoclass("android.bluetooth.BluetoothProfile")
+            self._BluetoothDevice = autoclass("android.bluetooth.BluetoothDevice")
+            self._ParcelUuid = autoclass("android.os.ParcelUuid")
+            self._UUID = autoclass("java.util.UUID")
+            self._ScanResult = autoclass("android.bluetooth.le.ScanResult")
+            self._ScanSettings = autoclass("android.bluetooth.le.ScanSettings")
+            self._ScanFilter = autoclass("android.bluetooth.le.ScanFilter")
+            self._BluetoothLeScanner = autoclass("android.bluetooth.le.BluetoothLeScanner")
+            self._Handler = autoclass("android.os.Handler")
+            self._Looper = autoclass("android.os.Looper")
+
+            adapter = self._bluetooth_manager.getAdapter()
+            if not adapter or not adapter.isEnabled():
+                log.error("BLE: Bluetooth адаптер выключен")
+                return False
+
+            self._bluetooth_adapter = adapter
+            self._initialized = True
+            log.info("BLE: Android BLE API инициализирован")
+            return True
+        except Exception as exc:
+            log.error(f"BLE: ошибка инициализации: {exc}")
+            return False
+
+    def _is_watch_device(self, name):
+        """Определяет, является ли устройство смарт-часами по имени."""
+        if not name:
+            return False
+        name_lower = name.lower()
+        for kw in self._watch_keywords:
+            if kw in name_lower:
+                return True
+        return False
+
+    def start_scan(self, timeout_ms=10000):
+        """Запускает BLE-сканирование на timeout_ms миллисекунд.
+
+        Возвращает dict:
+          status: 'found_hr' | 'watch_no_hr' | 'nothing' | 'bluetooth_off' | 'error'
+          devices: список найденных устройств [{name, address, has_hr_service, is_watch}]
+          message: человекочитаемое описание
+        """
+        self._scan_results = []
+        if not self._init_android_ble():
+            return {
+                "status": "bluetooth_off",
+                "devices": [],
+                "message": "Bluetooth недоступен. Включите Bluetooth и повторите.",
+            }
+
+        try:
+            return self._android_scan(timeout_ms)
+        except Exception as exc:
+            log.error(f"BLE scan error: {exc}")
+            return {
+                "status": "error",
+                "devices": [],
+                "message": f"Ошибка сканирования: {exc}",
+            }
+
+    def _android_scan(self, timeout_ms=10000):
+        """Реальное Android BLE-сканирование через pyjnius."""
+        from jnius import autoclass, cast, PythonJavaClass, java_method
+
+        scanner = self._bluetooth_adapter.getBluetoothLeScanner()
+        if not scanner:
+            return {"status": "bluetooth_off", "devices": [], "message": "BLE сканер недоступен"}
+
+        # Фильтр по Heart Rate Service UUID
+        hr_uuid = self._UUID.fromString(HR_SERVICE_UUID)
+        parcel_uuid = self._ParcelUuid.fromString(HR_SERVICE_UUID)
+
+        # ScanFilter для HR Service
+        scan_filter_builder = autoclass("android.bluetooth.le.ScanFilter$Builder")()
+        scan_filter_builder.setServiceUuid(parcel_uuid)
+        scan_filter = scan_filter_builder.build()
+
+        # ScanSettings
+        settings_builder = autoclass("android.bluetooth.le.ScanSettings$Builder")()
+        settings_builder.setScanMode(autoclass("android.bluetooth.le.ScanSettings").SCAN_MODE_LOW_LATENCY)
+        settings = settings_builder.build()
+
+        # Кастомный ScanCallback через PythonJavaClass
+        found_devices = []
+        found_hr_devices = []
+        found_watches_no_hr = []
+
+        class BleScanCallback(PythonJavaClass):
+            __javainterfaces__ = ["android/bluetooth/le/ScanCallback"]
+
+            def __init__(self):
+                super().__init__()
+                self.found_hr_devices = []
+                self.found_watches_no_hr = []
+                self.all_devices = []
+
+            @java_method("(Landroid/bluetooth/le/ScanResult;)V")
+            def onScanResult(self, callbackType, result):
+                device = result.getDevice()
+                name = device.getName() or ""
+                address = device.getAddress()
+
+                # Проверяем, рекламирует ли устройство HR Service
+                scan_record = result.getScanRecord()
+                has_hr_service = False
+                if scan_record:
+                    service_uuids = scan_record.getServiceUuids()
+                    if service_uuids:
+                        for pu in service_uuids:
+                            if pu.getUuid().toString() == HR_SERVICE_UUID:
+                                has_hr_service = True
+                                break
+
+                is_watch = self._is_watch_device(name)
+
+                dev_info = {
+                    "name": name,
+                    "address": address,
+                    "has_hr_service": has_hr_service,
+                    "is_watch": is_watch,
+                }
+
+                # Избегаем дубликатов по адресу
+                existing_addrs = [d["address"] for d in self.all_devices]
+                if address not in existing_addrs:
+                    self.all_devices.append(dev_info)
+                    if has_hr_service:
+                        self.found_hr_devices.append(dev_info)
+                    elif is_watch:
+                        self.found_watches_no_hr.append(dev_info)
+
+            @java_method("(I)V")
+            def onScanFailed(self, errorCode):
+                log.error(f"BLE scan failed: errorCode={errorCode}")
+
+        # Также сканируем без фильтра, чтобы найти часы без HR
+        class AllBleScanCallback(PythonJavaClass):
+            __javainterfaces__ = ["android/bluetooth/le/ScanCallback"]
+
+            def __init__(self):
+                super().__init__()
+                self.all_devices = []
+
+            @java_method("(Landroid/bluetooth/le/ScanResult;)V")
+            def onScanResult(self, callbackType, result):
+                device = result.getDevice()
+                name = device.getName() or ""
+                address = device.getAddress()
+
+                scan_record = result.getScanRecord()
+                has_hr_service = False
+                if scan_record:
+                    service_uuids = scan_record.getServiceUuids()
+                    if service_uuids:
+                        for pu in service_uuids:
+                            if pu.getUuid().toString() == HR_SERVICE_UUID:
+                                has_hr_service = True
+                                break
+
+                is_watch = self._is_watch_device(name)
+
+                existing_addrs = [d["address"] for d in self.all_devices]
+                if address not in existing_addrs:
+                    self.all_devices.append({
+                        "name": name,
+                        "address": address,
+                        "has_hr_service": has_hr_service,
+                        "is_watch": is_watch,
+                    })
+
+            @java_method("(I)V")
+            def onScanFailed(self, errorCode):
+                log.error(f"BLE general scan failed: errorCode={errorCode}")
+
+        # Сначала запускаем отфильтрованное сканирование (HR Service)
+        hr_callback = BleScanCallback()
+        scanner.startScan([scan_filter], settings, hr_callback)
+
+        # И общее сканирование (для обнаружения часов без HR)
+        general_settings_builder = autoclass("android.bluetooth.le.ScanSettings$Builder")()
+        general_settings_builder.setScanMode(autoclass("android.bluetooth.le.ScanSettings").SCAN_MODE_LOW_LATENCY)
+        general_settings = general_settings_builder.build()
+        general_callback = AllBleScanCallback()
+        scanner.startScan(None, general_settings, general_callback)
+
+        # Ждём timeout_ms
+        handler = self._Handler(self._Looper.getMainLooper())
+        import threading
+
+        scan_done = threading.Event()
+
+        def stop_scan():
+            try:
+                scanner.stopScan(hr_callback)
+            except Exception:
+                pass
+            try:
+                scanner.stopScan(general_callback)
+            except Exception:
+                pass
+            scan_done.set()
+
+        # Используем Clock для ожидания, т.к. это Kivy-поток
+        # На Android используем Handler.postDelayed
+        runnable_class = autoclass("java.lang.Runnable")
+
+        class StopRunnable(PythonJavaClass):
+            __javainterfaces__ = ["java/lang/Runnable"]
+            def __init__(self):
+                super().__init__()
+            def run(self):
+                stop_scan()
+
+        stop_runnable = StopRunnable()
+        handler.postDelayed(stop_runnable, timeout_ms)
+
+        # Блокируем на время сканирования (но в отдельном потоке, чтобы не заморозить UI)
+        scan_done.wait(timeout_ms / 1000.0 + 2)
+
+        # Объединяем результаты
+        all_found = {}
+        for dev in hr_callback.found_hr_devices:
+            all_found[dev["address"]] = dev
+        for dev in general_callback.all_devices:
+            if dev["address"] not in all_found:
+                all_found[dev["address"]] = dev
+
+        hr_devices = [d for d in all_found.values() if d["has_hr_service"]]
+        watch_devices_no_hr = [d for d in all_found.values() if d["is_watch"] and not d["has_hr_service"]]
+
+        self._scan_results = list(all_found.values())
+
+        if hr_devices:
+            best = hr_devices[0]
+            return {
+                "status": "found_hr",
+                "devices": hr_devices,
+                "best_device": best,
+                "message": f"Найден датчик ЧСС: {best['name'] or best['address']}",
+            }
+        elif watch_devices_no_hr:
+            watch = watch_devices_no_hr[0]
+            return {
+                "status": "watch_no_hr",
+                "devices": watch_devices_no_hr,
+                "best_device": watch,
+                "message": "Часы найдены, но не транслируют ЧСС",
+            }
+        else:
+            return {
+                "status": "nothing",
+                "devices": [],
+                "message": "BLE-устройства с ЧСС не найдены",
+            }
+
+    def connect_and_read_hr(self, device_info):
+        """Подключается к BLE-устройству и подписывается на Heart Rate Measurement.
+
+        device_info: dict с 'address'
+        Возвращает True если подключение успешно.
+        """
+        if not self._initialized:
+            return False
+
+        try:
+            return self._android_connect(device_info)
+        except Exception as exc:
+            log.error(f"BLE connect error: {exc}")
+            return False
+
+    def _android_connect(self, device_info):
+        """Реальное Android BLE-подключение через pyjnius."""
+        from jnius import autoclass, cast, PythonJavaClass, java_method
+
+        address = device_info["address"]
+        device = self._bluetooth_adapter.getRemoteDevice(address)
+        if not device:
+            log.error(f"BLE: устройство {address} не найдено")
+            return False
+
+        # GattCallback для обработки подключения и характеристик
+        ble_scanner = self
+
+        class GattCallback(PythonJavaClass):
+            __javainterfaces__ = ["android/bluetooth/BluetoothGattCallback"]
+
+            def __init__(self):
+                super().__init__()
+                self.gatt = None
+                self.services_discovered = False
+
+            @java_method("(Landroid/bluetooth/BluetoothGatt;II)V")
+            def onConnectionStateChange(self, gatt, status, newState):
+                if newState == ble_scanner._BluetoothProfile.STATE_CONNECTED:
+                    log.info("BLE: подключено, обнаружение сервисов...")
+                    gatt.discoverServices()
+                elif newState == ble_scanner._BluetoothProfile.STATE_DISCONNECTED:
+                    log.info("BLE: отключено")
+                    ble_scanner.is_connected = False
+                    ble_scanner.connected_device_name = None
+                    ble_scanner.connected_device_address = None
+                    gatt.close()
+
+            @java_method("(Landroid/bluetooth/BluetoothGatt;I)V")
+            def onServicesDiscovered(self, gatt, status):
+                if status == ble_scanner._BluetoothGatt.GATT_SUCCESS:
+                    self.services_discovered = True
+                    services = gatt.getServices()
+                    hr_service = None
+                    for svc in services:
+                        svc_uuid = svc.getUuid().toString()
+                        if svc_uuid == HR_SERVICE_UUID:
+                            hr_service = svc
+                            break
+
+                    if hr_service is None:
+                        log.warning("BLE: HR Service не найден на устройстве")
+                        gatt.disconnect()
+                        return
+
+                    # Находим характеристику HR Measurement
+                    hr_char = None
+                    for char in hr_service.getCharacteristics():
+                        if char.getUuid().toString() == HR_MEASUREMENT_CHAR_UUID:
+                            hr_char = char
+                            break
+
+                    if hr_char is None:
+                        log.warning("BLE: HR Measurement характеристика не найдена")
+                        gatt.disconnect()
+                        return
+
+                    # Включаем уведомления
+                    gatt.setCharacteristicNotification(hr_char, True)
+
+                    # Записываем дескриптор Client Characteristic Configuration (CCCD)
+                    CCCD_UUID = "00002902-0000-1000-8000-00805f9b34fb"
+                    cccd = None
+                    for desc in hr_char.getDescriptors():
+                        if desc.getUuid().toString() == CCCD_UUID:
+                            cccd = desc
+                            break
+
+                    if cccd is not None:
+                        BluetoothGattDescriptor = autoclass("android.bluetooth.BluetoothGattDescriptor")
+                        ENABLE_NOTIFICATION_VALUE = autoclass("android.bluetooth.BluetoothGattDescriptor").ENABLE_NOTIFICATION_VALUE
+                        cccd.setValue(ENABLE_NOTIFICATION_VALUE)
+                        gatt.writeDescriptor(ccd)
+                    else:
+                        # Альтернативный способ записи CCCD
+                        BluetoothGattDescriptor = autoclass("android.bluetooth.BluetoothGattDescriptor")
+                        cccd_new = BluetoothGattDescriptor(
+                            autoclass("java.util.UUID").fromString(CCCD_UUID),
+                            0
+                        )
+                        enable_val = [0x01, 0x00]
+                        # Устанавливаем как byte array
+                        arr = autoclass("java.lang.reflect.Array").newInstance(
+                            autoclass("byte"), 2
+                        )
+                        arr[0] = 0x01
+                        arr[1] = 0x00
+                        cccd.setValue(arr)
+                        hr_char.addDescriptor(cccd_new)
+
+                    log.info("BLE: подписка на HR уведомления активна")
+
+            @java_method("(Landroid/bluetooth/BluetoothGatt;Landroid/bluetooth/BluetoothGattCharacteristic;I)V")
+            def onCharacteristicChanged(self, gatt, characteristic):
+                # Парсим Heart Rate Measurement (Bluetooth SIG spec)
+                value = characteristic.getValue()
+                if not value or len(value) < 2:
+                    return
+
+                first_byte = value[0] & 0xFF
+
+                # Бит 0: формат ЧСС (0 = UINT8, 1 = UINT16)
+                hr_format_16 = (first_byte & 0x01) != 0
+
+                # Бит 4: presence of RR-Intervals
+                rr_present = (first_byte & 0x10) != 0
+
+                # ЧСС
+                if hr_format_16:
+                    if len(value) >= 3:
+                        heart_rate = struct.unpack_from("<H", bytes(value), 1)[0]
+                    else:
+                        heart_rate = 0
+                    offset = 3
+                else:
+                    heart_rate = value[1] & 0xFF
+                    offset = 2
+
+                ble_scanner.current_heart_rate = heart_rate
+                log.debug(f"BLE HR: {heart_rate} bpm")
+
+                # RR-интервалы
+                if rr_present:
+                    while offset + 2 <= len(value):
+                        rr_raw = struct.unpack_from("<H", bytes(value), offset)[0]
+                        offset += 2
+                        # Спецификация BLE: RR в единицах 1/1024 секунды
+                        rr_ms = int((rr_raw / 1024.0) * 1000.0)
+                        if 200 < rr_ms < 2000:  # Физиологический фильтр
+                            ble_scanner.rr_intervals.append(rr_ms)
+
+        gatt_callback = GattCallback()
+
+        # Подключаемся (autoConnect=False для быстрого подключения)
+        self._bluetooth_gatt = device.connectGatt(self._activity, False, gatt_callback)
+        gatt_callback.gatt = self._bluetooth_gatt
+
+        self.connected_device_name = device_info.get("name", "")
+        self.connected_device_address = address
+        self.is_connected = True
+        self._gatt_callback = gatt_callback
+
+        log.info(f"BLE: подключение к {device_info.get('name', address)}...")
+        return True
+
+    def disconnect(self):
+        """Отключается от BLE-устройства."""
+        if self._bluetooth_gatt:
+            try:
+                self._bluetooth_gatt.disconnect()
+                self._bluetooth_gatt.close()
+            except Exception as exc:
+                log.warning(f"BLE disconnect error: {exc}")
+            finally:
+                self._bluetooth_gatt = None
+        self.is_connected = False
+        self.connected_device_name = None
+        self.connected_device_address = None
+        self.current_heart_rate = 0
+
+    def get_status(self):
+        """Возвращает текущий статус BLE-подключения."""
+        return {
+            "is_connected": self.is_connected,
+            "device_name": self.connected_device_name,
+            "heart_rate": self.current_heart_rate,
+            "rr_count": len(self.rr_intervals),
+            "rr_intervals": list(self.rr_intervals),
+        }
 
 
 # ==============================================================================
-# МОСТ ДЛЯ ДАННЫХ GALAXY WATCH
+# FOREGROUND SERVICE — приложение работает в фоне
+# ==============================================================================
+
+def start_foreground_service():
+    """Запускает Android Foreground Service для работы в фоне."""
+    if platform != "android":
+        return
+
+    try:
+        from jnius import autoclass
+
+        PythonActivity = autoclass("org.kivy.android.PythonActivity")
+        activity = PythonActivity.mActivity
+        if not activity:
+            return
+
+        Intent = autoclass("android.content.Intent")
+        Context = autoclass("android.content.Context")
+        Notification = autoclass("android.app.Notification")
+        NotificationChannel = autoclass("android.app.NotificationChannel")
+        NotificationManager = autoclass("android.app.NotificationManager")
+        PendingIntent = autoclass("android.app.PendingIntent")
+        Build = autoclass("android.os.Build")
+        Integer = autoclass("java.lang.Integer")
+
+        CHANNEL_ID = "aegisneuro_foreground"
+        NOTIFICATION_ID = 1001
+
+        # Создаём NotificationChannel (Android 8+)
+        if Build.VERSION.SDK_INT >= 26:
+            channel_name = "AegisNeuro Сервис"
+            channel_desc = "Мониторинг сердечного ритма и нейрорегуляция"
+            importance = Integer.valueOf(NotificationManager.IMPORTANCE_LOW)
+            channel = NotificationChannel(CHANNEL_ID, channel_name, importance)
+            channel.setDescription(channel_desc)
+            channel.setShowBadge(False)
+
+            nm = activity.getSystemService(Context.NOTIFICATION_SERVICE)
+            if nm:
+                nm.createNotificationChannel(channel)
+
+        # Строим уведомление
+        NotificationBuilder = autoclass("android.app.Notification$Builder")
+
+        if Build.VERSION.SDK_INT >= 26:
+            builder = NotificationBuilder(activity, CHANNEL_ID)
+        else:
+            builder = NotificationBuilder(activity)
+
+        builder.setSmallIcon(autoclass("org.aegisneuro.aegisneuro.R").drawable.icon)
+        builder.setContentTitle("AegisNeuro работает")
+        builder.setContentText("Мониторинг ЧСС и нейрорегуляция активны")
+        builder.setOngoing(True)
+        builder.setPriority(Notification.PRIORITY_LOW)
+
+        # PendingIntent для возврата в приложение при нажатии
+        intent = Intent(activity, PythonActivity)
+        intent.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+        pi_flags = PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+        pending = PendingIntent.getActivity(activity, 0, intent, pi_flags)
+        builder.setContentIntent(pending)
+
+        notification = builder.build()
+
+        # Запускаем как Foreground Service через p4a service API
+        try:
+            service_class = autoclass("org.aegisneuro.aegisneuro.ServiceAegisNeuro")
+            activity.startForegroundService(Intent(activity, service_class))
+
+            # Альтернативно, если p4a service не определён, используем сервис Kivy
+            try:
+                PythonService = autoclass("org.kivy.android.PythonService")
+                PythonService.start("AegisNeuro", "Мониторинг ЧСС активен")
+            except Exception:
+                pass
+
+        except Exception as exc:
+            log.warning(f"Foreground service start error: {exc}")
+            # Запускаем сервис через Kivy's PythonService как фоллбэк
+            try:
+                PythonService = autoclass("org.kivy.android.PythonService")
+                PythonService.start("AegisNeuro", "Мониторинг ЧСС активен")
+            except Exception as exc2:
+                log.warning(f"PythonService fallback error: {exc2}")
+
+        log.info("Foreground Service запущен")
+
+    except Exception as exc:
+        log.error(f"Foreground Service initialization error: {exc}")
+
+
+def stop_foreground_service():
+    """Останавливает Foreground Service."""
+    if platform != "android":
+        return
+    try:
+        from jnius import autoclass
+
+        try:
+            PythonService = autoclass("org.kivy.android.PythonService")
+            PythonService.stop()
+        except Exception:
+            pass
+
+        try:
+            service_class = autoclass("org.aegisneuro.aegisneuro.ServiceAegisNeuro")
+            PythonActivity = autoclass("org.kivy.android.PythonActivity")
+            activity = PythonActivity.mActivity
+            if activity:
+                Intent = autoclass("android.content.Intent")
+                activity.stopService(Intent(activity, service_class))
+        except Exception:
+            pass
+
+        log.info("Foreground Service остановлен")
+    except Exception as exc:
+        log.error(f"Foreground Service stop error: {exc}")
+
+
+# ==============================================================================
+# МОСТ ДЛЯ ДАННЫХ GALAXY WATCH (оставлено для обратной совместимости)
 # ==============================================================================
 class WatchDataBridge:
-    """Заготовка канала данных Wear OS / Galaxy Watch.
+    """Канал данных Wear OS / Galaxy Watch.
 
-    v42: принимает JSONL-пакеты от будущего Android/Wear receiver.
+    v42: принимает JSONL-пакеты от Android/Wear receiver.
     """
 
     def __init__(self):
         self.buffer = WatchDataBuffer()
         self.inbox_path = self._resolve_inbox_path()
         self._read_offset = 0
-        self._last_connection_status = {
-            "node_connected": platform != "android",
-            "node_count": 0,
-            "node_names": [],
-            "watch_app_ready": platform != "android",
-            "watch_app_node_count": 0,
-            "watch_app_node_names": [],
-            "node_error": None,
-        }
-        self._start_runtime_bridge()
 
     def latest_rr_intervals(self):
         self.refresh()
@@ -96,47 +719,7 @@ class WatchDataBridge:
 
     def status(self):
         self.refresh()
-        status = self.buffer.summary()
-        status.update(self.connection_status())
-        return status
-
-    def connection_status(self):
-        if platform != "android":
-            return dict(self._last_connection_status)
-
-        try:
-            from jnius import autoclass
-
-            PythonActivity = autoclass("org.kivy.android.PythonActivity")
-            ConnectionBridge = autoclass("org.aegisneuro.aegisneuro.AegisWatchConnectionBridge")
-            activity = PythonActivity.mActivity
-            raw_status = ConnectionBridge.getStatusJson(activity)
-            payload = json.loads(str(raw_status))
-            nodes = payload.get("nodes") or []
-            capability_nodes = payload.get("capability_nodes") or []
-            self._last_connection_status = {
-                "node_connected": bool(payload.get("connected")),
-                "node_count": int(payload.get("node_count") or 0),
-                "node_names": [node.get("display_name", "") for node in nodes],
-                "watch_app_ready": bool(payload.get("watch_app_ready")),
-                "watch_app_node_count": int(payload.get("capability_node_count") or 0),
-                "watch_app_node_names": [
-                    node.get("display_name", "") for node in capability_nodes
-                ],
-                "node_error": payload.get("error"),
-            }
-        except Exception as exc:  # noqa: BLE001
-            log.warning("Watch connection check failed: %s", exc)
-            self._last_connection_status = {
-                "node_connected": False,
-                "node_count": 0,
-                "node_names": [],
-                "watch_app_ready": False,
-                "watch_app_node_count": 0,
-                "watch_app_node_names": [],
-                "node_error": str(exc),
-            }
-        return dict(self._last_connection_status)
+        return self.buffer.summary()
 
     def refresh(self):
         if self.inbox_path is None or not self.inbox_path.exists():
@@ -158,8 +741,6 @@ class WatchDataBridge:
         accepted = self.buffer.ingest(payload)
         if accepted:
             log.info("Watch packet accepted: %s RR intervals", accepted)
-        elif payload.get("heart_rate_bpm") or payload.get("bpm"):
-            log.info("Watch HR packet accepted without IBI")
 
     def _resolve_inbox_path(self):
         try:
@@ -178,82 +759,6 @@ class WatchDataBridge:
             log.warning("Watch inbox path unavailable: %s", exc)
             return None
 
-    def _start_runtime_bridge(self):
-        if platform != "android":
-            return
-        try:
-            from jnius import autoclass
-
-            PythonActivity = autoclass("org.kivy.android.PythonActivity")
-            RuntimeBridge = autoclass("org.aegisneuro.aegisneuro.AegisWatchRuntimeBridge")
-            activity = PythonActivity.mActivity
-            if activity is not None:
-                RuntimeBridge.start(activity)
-                log.info("Watch runtime bridge started")
-        except Exception as exc:  # noqa: BLE001
-            log.warning("Watch runtime bridge unavailable: %s", exc)
-
-
-class AudioOutputBridge:
-    """Checks whether binaural audio can be delivered through headphones."""
-
-    HEADPHONE_TYPES = {
-        "TYPE_WIRED_HEADSET": "проводная гарнитура",
-        "TYPE_WIRED_HEADPHONES": "проводные наушники",
-        "TYPE_BLUETOOTH_A2DP": "Bluetooth-наушники",
-        "TYPE_USB_HEADSET": "USB-наушники",
-        "TYPE_BLE_HEADSET": "BLE-наушники",
-    }
-
-    def __init__(self):
-        self._last_status = {
-            "connected": platform != "android",
-            "device_name": "desktop",
-            "detail": "desktop audio",
-        }
-
-    def status(self):
-        if platform != "android":
-            return dict(self._last_status)
-
-        try:
-            from jnius import autoclass
-
-            Context = autoclass("android.content.Context")
-            AudioDeviceInfo = autoclass("android.media.AudioDeviceInfo")
-            AudioManager = autoclass("android.media.AudioManager")
-            PythonActivity = autoclass("org.kivy.android.PythonActivity")
-
-            activity = PythonActivity.mActivity
-            if activity is None:
-                return self._store(False, "нет Activity", "Android Activity недоступна")
-
-            audio_manager = activity.getSystemService(Context.AUDIO_SERVICE)
-            devices = audio_manager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
-
-            for device in devices:
-                device_type = device.getType()
-                for attr_name, label in self.HEADPHONE_TYPES.items():
-                    if (
-                        hasattr(AudioDeviceInfo, attr_name)
-                        and device_type == getattr(AudioDeviceInfo, attr_name)
-                    ):
-                        name = str(device.getProductName() or label)
-                        return self._store(True, name, label)
-
-            return self._store(False, "нет наушников", "Подключите стерео-наушники")
-        except Exception as exc:  # noqa: BLE001
-            log.warning("Audio output check failed: %s", exc)
-            return self._store(False, "не удалось проверить", str(exc))
-
-    def _store(self, connected, device_name, detail):
-        self._last_status = {
-            "connected": bool(connected),
-            "device_name": device_name,
-            "detail": detail,
-        }
-        return dict(self._last_status)
-
 
 # ==============================================================================
 # МОНОЛИТНЫЙ ИНТЕРФЕЙС И КОНТУР БИОЛОГИЧЕСКОЙ ОБРАТНОЙ СВЯЗИ
@@ -264,9 +769,9 @@ class AegisNeuroMobileScreen(MDScreen):
 
         self.ai_brain = AegisRLBrain()
         self.audio_engine = AegisAudioEngine()
-        self.audio_bridge = AudioOutputBridge()
         self.watch_bridge = WatchDataBridge()
         self.predictor = StormPredictor()
+        self.ble_scanner = BLEHeartRateScanner()
 
         self.current_stress = 120.0
         self.current_rmssd = 35.0
@@ -280,14 +785,6 @@ class AegisNeuroMobileScreen(MDScreen):
         self.is_scanning = False
         self.current_bpm = 0
         self.storm_prob = 0
-        self.audio_calibration_ok = False
-        self.audio_left_ok = False
-        self.audio_right_ok = False
-        self.watch_registration_ok = False
-        self.registration_mode = "registration"
-        self._audio_device_name = None
-        self._headphone_check_running = False
-        self._headphone_check_played = False
 
         self.audio_engine.start_tone()
         self.build_ui()
@@ -303,7 +800,6 @@ class AegisNeuroMobileScreen(MDScreen):
             size_hint_y=None,
         )
         content.bind(minimum_height=content.setter('height'))
-        self.content = content
 
         # ── 1. Карточка заголовка ──
         title_card = MDCard(
@@ -316,7 +812,6 @@ class AegisNeuroMobileScreen(MDScreen):
             elevation=2,
         )
         title_card.bind(minimum_height=title_card.setter('height'))
-        self.title_card = title_card
 
         self.title_label = MDLabel(
             text="AEGISNEURO",
@@ -371,63 +866,6 @@ class AegisNeuroMobileScreen(MDScreen):
         content.add_widget(self.update_banner)
         self._update_url = None
 
-        self.registration_card = MDCard(
-            orientation='vertical',
-            padding=dp(18),
-            spacing=dp(12),
-            size_hint_y=None,
-            radius=[dp(12)],
-            md_bg_color=[0.06, 0.08, 0.12, 1],
-            elevation=2,
-        )
-        self.registration_card.bind(minimum_height=self.registration_card.setter('height'))
-
-        self.registration_title = MDLabel(
-            text="Регистрация оборудования",
-            halign="center",
-            font_style="H6",
-            theme_text_color="Custom",
-            text_color=[0.85, 0.92, 0.96, 1],
-            size_hint_y=None,
-            height=dp(34),
-        )
-        self.registration_detail = MDLabel(
-            text="Перед началом нужно проверить наушники и часы",
-            halign="center",
-            font_style="Body2",
-            theme_text_color="Custom",
-            text_color=[0.58, 0.68, 0.74, 1],
-            size_hint_y=None,
-            height=dp(28),
-        )
-        self.registration_detail.bind(
-            width=lambda inst, w: setattr(inst, 'text_size', (w, None))
-        )
-        self.registration_detail.bind(
-            texture_size=lambda inst, ts: setattr(inst, 'height', max(dp(28), ts[1]))
-        )
-        self.check_headphones_btn = MDRaisedButton(
-            text="1. ПРОВЕРКА НАУШНИКОВ",
-            md_bg_color=[0.18, 0.45, 0.72, 1],
-            size_hint_x=1.0,
-            size_hint_y=None,
-            height=dp(52),
-            on_release=self.open_headphone_registration,
-        )
-        self.check_watch_btn = MDRaisedButton(
-            text="2. ПРОВЕРКА ЧАСОВ / СЕНСОРОВ",
-            md_bg_color=[0.18, 0.55, 0.26, 1],
-            size_hint_x=1.0,
-            size_hint_y=None,
-            height=dp(52),
-            on_release=self.open_watch_registration,
-        )
-        self.registration_card.add_widget(self.registration_title)
-        self.registration_card.add_widget(self.registration_detail)
-        self.registration_card.add_widget(self.check_headphones_btn)
-        self.registration_card.add_widget(self.check_watch_btn)
-        content.add_widget(self.registration_card)
-
         # ── 2. Карточка статуса ──
         self.status_card = MDCard(
             orientation='vertical',
@@ -441,7 +879,7 @@ class AegisNeuroMobileScreen(MDScreen):
         self.status_card.bind(minimum_height=self.status_card.setter('height'))
 
         self.status_label = MDLabel(
-            text="Готов к замеру",
+            text="Готов к подключению",
             halign="center",
             font_style="H6",
             theme_text_color="Custom",
@@ -457,7 +895,7 @@ class AegisNeuroMobileScreen(MDScreen):
         )
 
         self.status_detail_label = MDLabel(
-            text="Подключите Galaxy Watch4 и дождитесь потока HR/IBI",
+            text="Подключите датчик ЧСС через Bluetooth",
             halign="center",
             font_style="Body1",
             theme_text_color="Custom",
@@ -475,124 +913,6 @@ class AegisNeuroMobileScreen(MDScreen):
         self.status_card.add_widget(self.status_label)
         self.status_card.add_widget(self.status_detail_label)
         content.add_widget(self.status_card)
-
-        self.audio_status_card = MDCard(
-            orientation='vertical',
-            padding=dp(16),
-            spacing=dp(4),
-            size_hint_y=None,
-            radius=[dp(12)],
-            md_bg_color=[0.12, 0.09, 0.05, 1],
-            elevation=1,
-        )
-        self.audio_status_card.bind(minimum_height=self.audio_status_card.setter('height'))
-
-        self.audio_status_label = MDLabel(
-            text="Аудиовыход",
-            halign="center",
-            font_style="Subtitle2",
-            theme_text_color="Custom",
-            text_color=[0.9, 0.85, 0.72, 1],
-            size_hint_y=None,
-            height=dp(28),
-        )
-        self.audio_status_detail_label = MDLabel(
-            text="Подключите стерео-наушники",
-            halign="center",
-            font_style="Body2",
-            theme_text_color="Custom",
-            text_color=[0.72, 0.68, 0.58, 1],
-            size_hint_y=None,
-            height=dp(22),
-        )
-        self.audio_status_detail_label.bind(
-            width=lambda inst, w: setattr(inst, 'text_size', (w, None))
-        )
-        self.audio_status_detail_label.bind(
-            texture_size=lambda inst, ts: setattr(inst, 'height', max(dp(22), ts[1]))
-        )
-        audio_check_row = MDBoxLayout(
-            orientation='horizontal',
-            size_hint_y=None,
-            height=dp(48),
-            spacing=dp(8),
-        )
-        self.audio_test_btn = MDRaisedButton(
-            text="ТЕСТ 4.7 ГЦ",
-            md_bg_color=[0.18, 0.45, 0.72, 1],
-            size_hint_x=0.34,
-            on_release=self.start_headphone_check,
-        )
-        self.audio_left_btn = MDRaisedButton(
-            text="ЛЕВЫЙ",
-            md_bg_color=[0.18, 0.55, 0.26, 1],
-            size_hint_x=0.33,
-            on_release=self.confirm_left_headphone,
-        )
-        self.audio_right_btn = MDRaisedButton(
-            text="ПРАВЫЙ",
-            md_bg_color=[0.18, 0.55, 0.26, 1],
-            size_hint_x=0.33,
-            on_release=self.confirm_right_headphone,
-        )
-        audio_check_row.add_widget(self.audio_test_btn)
-        audio_check_row.add_widget(self.audio_left_btn)
-        audio_check_row.add_widget(self.audio_right_btn)
-        self.audio_status_card.add_widget(self.audio_status_label)
-        self.audio_status_card.add_widget(self.audio_status_detail_label)
-        self.audio_status_card.add_widget(audio_check_row)
-        content.add_widget(self.audio_status_card)
-
-        self.headphone_actions = MDBoxLayout(
-            orientation='vertical',
-            size_hint_y=None,
-            height=dp(56),
-            padding=[dp(8), dp(4), dp(8), dp(4)],
-        )
-        self.headphone_back_btn = MDRaisedButton(
-            text="НАЗАД",
-            md_bg_color=[0.18, 0.22, 0.28, 1],
-            size_hint_x=1.0,
-            size_hint_y=None,
-            height=dp(48),
-            on_release=self.back_to_registration,
-        )
-        self.headphone_actions.add_widget(self.headphone_back_btn)
-
-        self.watch_check_actions = MDBoxLayout(
-            orientation='vertical',
-            size_hint_y=None,
-            height=dp(168),
-            spacing=dp(8),
-            padding=[dp(8), dp(4), dp(8), dp(4)],
-        )
-        self.watch_retry_btn = MDRaisedButton(
-            text="ПОВТОРИТЬ",
-            md_bg_color=[0.18, 0.45, 0.72, 1],
-            size_hint_x=1.0,
-            size_hint_y=None,
-            height=dp(48),
-            on_release=self.open_watch_registration,
-        )
-        self.watch_install_btn = MDRaisedButton(
-            text="УСТАНОВИТЬ НА ЧАСЫ",
-            md_bg_color=[0.55, 0.22, 0.12, 1],
-            size_hint_x=1.0,
-            size_hint_y=None,
-            height=dp(48),
-            on_release=self.open_watch_install,
-        )
-        self.watch_back_btn = MDRaisedButton(
-            text="НАЗАД",
-            md_bg_color=[0.18, 0.22, 0.28, 1],
-            size_hint_x=1.0,
-            size_hint_y=None,
-            height=dp(48),
-            on_release=self.back_to_registration,
-        )
-        self.watch_check_actions.add_widget(self.watch_retry_btn)
-        self.watch_check_actions.add_widget(self.watch_install_btn)
-        self.watch_check_actions.add_widget(self.watch_back_btn)
 
         # ── 3. Селектор профиля ──
         profile_card = MDCard(
@@ -648,7 +968,6 @@ class AegisNeuroMobileScreen(MDScreen):
         gender_row.add_widget(self.male_btn)
         gender_row.add_widget(self.female_btn)
         profile_card.add_widget(gender_row)
-        self.profile_card = profile_card
         content.add_widget(profile_card)
 
         # ── 4. Карточка метрик ──
@@ -900,7 +1219,7 @@ class AegisNeuroMobileScreen(MDScreen):
         self.metrics_card.add_widget(metrics_row_2)
         content.add_widget(self.metrics_card)
 
-        # ── 5. Кнопка действия (с отступом снизу) ──
+        # ── 5. Кнопка действия ──
         action_container = MDBoxLayout(
             orientation='vertical',
             size_hint_y=None,
@@ -909,22 +1228,20 @@ class AegisNeuroMobileScreen(MDScreen):
         )
 
         self.action_btn = MDRaisedButton(
-            text="ПРОВЕРИТЬ WATCH",
+            text="ПОДКЛЮЧИТЬ ДАТЧИК",
             pos_hint={"center_x": 0.5},
             md_bg_color=[0, 0.78, 0.35, 1],
             size_hint_x=1.0,
             size_hint_y=None,
             height=dp(52),
-            on_release=self.start_scan,
+            on_release=self.start_ble_scan,
             font_style="Button",
         )
         action_container.add_widget(self.action_btn)
-        self.action_container = action_container
         content.add_widget(action_container)
 
         # ── Нижний отступ для скролла ──
         bottom_spacer = MDBoxLayout(size_hint_y=None, height=dp(24))
-        self.bottom_spacer = bottom_spacer
         content.add_widget(bottom_spacer)
 
         scroll.add_widget(content)
@@ -932,107 +1249,8 @@ class AegisNeuroMobileScreen(MDScreen):
 
         # ── Фоновые задачи ──
         Clock.schedule_interval(self.mobile_lifecycle_loop, 1.0)
-        Clock.schedule_interval(self.refresh_watch_status, 1.0)
-        Clock.schedule_interval(self.refresh_audio_status, 1.0)
+        Clock.schedule_interval(self._update_ble_status, 1.0)
         Clock.schedule_once(self._check_for_update, 3.0)
-        self._render_registration_mode("registration")
-
-    def _render_registration_mode(self, mode):
-        self.registration_mode = mode
-        widgets = [self.title_card]
-
-        if mode == "registration":
-            self._update_registration_summary()
-            widgets.append(self.registration_card)
-        elif mode == "headphones":
-            widgets.append(self.audio_status_card)
-            widgets.append(self.headphone_actions)
-        elif mode == "watch_check":
-            widgets.append(self.status_card)
-            widgets.append(self.watch_check_actions)
-        elif mode == "main":
-            widgets.extend([
-                self.status_card,
-                self.audio_status_card,
-                self.profile_card,
-                self.metrics_card,
-                self.action_container,
-                self.bottom_spacer,
-            ])
-
-        self.content.clear_widgets()
-        for widget in widgets:
-            self.content.add_widget(widget)
-
-    def _update_registration_summary(self):
-        audio_text = "наушники проверены" if self.audio_calibration_ok else "наушники не проверены"
-        watch_text = "часы/сенсоры готовы" if self.watch_registration_ok else "часы/сенсоры не проверены"
-        self.registration_detail.text = f"{audio_text}\n{watch_text}"
-        self.check_headphones_btn.md_bg_color = (
-            [0.08, 0.55, 0.24, 1] if self.audio_calibration_ok else [0.58, 0.12, 0.12, 1]
-        )
-        self.check_watch_btn.md_bg_color = (
-            [0.08, 0.55, 0.24, 1] if self.watch_registration_ok else [0.58, 0.12, 0.12, 1]
-        )
-        self._update_headphone_button_colors()
-
-    def _update_headphone_button_colors(self):
-        if hasattr(self, "audio_left_btn"):
-            self.audio_left_btn.md_bg_color = (
-                [0.08, 0.55, 0.24, 1] if self.audio_left_ok else [0.58, 0.12, 0.12, 1]
-            )
-        if hasattr(self, "audio_right_btn"):
-            self.audio_right_btn.md_bg_color = (
-                [0.08, 0.55, 0.24, 1] if self.audio_right_ok else [0.58, 0.12, 0.12, 1]
-            )
-        if hasattr(self, "watch_retry_btn"):
-            self.watch_retry_btn.md_bg_color = (
-                [0.08, 0.55, 0.24, 1] if self.watch_registration_ok else [0.58, 0.12, 0.12, 1]
-            )
-
-    def _complete_registration_step(self):
-        self.watch_registration_ok = self._is_watch_ready_for_registration()
-        if self.audio_calibration_ok and self.watch_registration_ok:
-            self._render_registration_mode("main")
-        else:
-            self._render_registration_mode("registration")
-
-    def _is_watch_ready_for_registration(self):
-        status = self.watch_bridge.status()
-        return bool(
-            status.get("connected")
-            or status.get("watch_app_ready")
-            or status.get("rr_count", 0) >= 10
-        )
-
-    def open_headphone_registration(self, *args):
-        self.refresh_audio_status()
-        self._render_registration_mode("headphones")
-
-    def open_watch_registration(self, *args):
-        self.refresh_watch_status()
-        self.watch_registration_ok = self._is_watch_ready_for_registration()
-        if self.watch_registration_ok and self.audio_calibration_ok:
-            self._render_registration_mode("main")
-        else:
-            self._render_registration_mode("watch_check")
-
-    def back_to_registration(self, *args):
-        self._complete_registration_step()
-
-    def open_watch_install(self, *args):
-        self.status_card.md_bg_color = [0.3, 0.2, 0.05, 1]
-        self.status_label.text = "Установка на часы"
-        self.status_detail_label.text = (
-            "Откроется установочный файл AegisNeuro Watch. В продакшне эта кнопка ведёт "
-            "в официальный канал установки, где клиент подтверждает установку на часах."
-        )
-        try:
-            import webbrowser
-
-            webbrowser.open(WATCH_APK_URL)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("Watch install URL open failed: %s", exc)
 
     # ── Обновление цвета метрик в зависимости от значений ──
     def _update_metric_colors(self):
@@ -1063,252 +1281,235 @@ class AegisNeuroMobileScreen(MDScreen):
         else:
             self.storm_value_label.text_color = [1, 0.35, 0.3, 1]
 
-    def start_headphone_check(self, *args):
-        audio_status = self.audio_bridge.status()
-        if not audio_status["connected"]:
-            self.audio_calibration_ok = False
-            self.audio_left_ok = False
-            self.audio_right_ok = False
-            self._update_headphone_button_colors()
-            self.audio_status_card.md_bg_color = [0.28, 0.16, 0.05, 1]
-            self.audio_status_label.text = "Сначала подключите наушники"
-            self.audio_status_detail_label.text = "Тест 4.7 Гц доступен только через стерео-наушники"
-            return
+    def _update_ble_status(self, dt=None):
+        """Обновляет статус BLE-подключения и отображает ЧСС в реальном времени."""
+        ble_status = self.ble_scanner.get_status()
 
-        self.audio_calibration_ok = False
-        self.audio_left_ok = False
-        self.audio_right_ok = False
-        self._update_headphone_button_colors()
-        self._headphone_check_running = True
-        self._headphone_check_played = True
-        self.audio_engine.start_headphone_check(4.7, 9.0)
-        self.audio_status_card.md_bg_color = [0.06, 0.14, 0.22, 1]
-        self.audio_status_label.text = "Идёт тест наушников"
-        self.audio_status_detail_label.text = "Слева: ровный тон. Справа: ровный тон. Потом оба уха: разность 4.7 Гц"
-        Clock.schedule_once(self._finish_headphone_check, 9.5)
+        if ble_status["is_connected"]:
+            hr = ble_status["heart_rate"]
+            if hr > 0:
+                self.current_bpm = hr
+                self.hr_value_label.text = str(hr)
 
-    def _finish_headphone_check(self, dt=None):
-        self._headphone_check_running = False
-        if not self.audio_calibration_ok:
-            self.audio_status_card.md_bg_color = [0.28, 0.16, 0.05, 1]
-            self.audio_status_label.text = "Подтвердите стерео"
-            self.audio_status_detail_label.text = "Нажмите «ЛЕВЫЙ» и «ПРАВЫЙ», если тон был строго в каждом ухе отдельно"
+                # Если есть RR-интервалы от BLE, отправляем в буфер
+                rr_data = ble_status["rr_intervals"]
+                if rr_data:
+                    # Инжектим в WatchDataBuffer для совместимости с StormPredictor
+                    payload = {
+                        "type": "ble_hr",
+                        "heart_rate": hr,
+                        "rr_intervals_ms": rr_data[-10:],  # последние 10
+                    }
+                    self.watch_bridge.ingest_payload(payload)
 
-    def _confirm_headphone_side(self, side):
-        audio_status = self.audio_bridge.status()
-        if not self._headphone_check_played:
-            self.audio_calibration_ok = False
-            self.audio_status_card.md_bg_color = [0.28, 0.16, 0.05, 1]
-            self.audio_status_label.text = "Сначала запустите тест"
-            self.audio_status_detail_label.text = "Сначала должен прозвучать левый канал, потом правый, потом 4.7 Гц"
-            return
-
-        if not audio_status["connected"]:
-            self.audio_calibration_ok = False
-            self.audio_left_ok = False
-            self.audio_right_ok = False
-            self._update_headphone_button_colors()
-            self.audio_status_card.md_bg_color = [0.28, 0.16, 0.05, 1]
-            self.audio_status_label.text = "Нужны наушники"
-            self.audio_status_detail_label.text = "Подключите стерео-наушники и повторите тест"
-            return
-
-        if side == "left":
-            self.audio_left_ok = True
-        elif side == "right":
-            self.audio_right_ok = True
-
-        self.audio_calibration_ok = self.audio_left_ok and self.audio_right_ok
-        self._audio_device_name = audio_status["device_name"]
-        self._update_headphone_button_colors()
-
-        if self.audio_calibration_ok:
-            self.audio_status_card.md_bg_color = [0.08, 0.16, 0.1, 1]
-            self.audio_status_label.text = "Стерео 4.7 Гц проверено"
-            self.audio_status_detail_label.text = f"{audio_status['device_name']}: левый и правый канал подтверждены"
-            Clock.schedule_once(lambda dt: self._complete_registration_step(), 0.8)
+                # Обновляем статус только если не идёт замер
+                if not self.is_scanning:
+                    self.status_card.md_bg_color = [0.08, 0.16, 0.1, 1]
+                    device_name = ble_status["device_name"] or "Датчик ЧСС"
+                    rr_count = len(self.ble_scanner.rr_intervals)
+                    self.status_label.text = f"Подключено: {device_name}"
+                    self.status_detail_label.text = f"ЧСС: {hr} bpm | R-R: {rr_count} интервалов"
+            elif not self.is_scanning:
+                self.status_detail_label.text = "Ожидание данных ЧСС..."
         else:
-            missing = "правый" if self.audio_left_ok else "левый"
-            self.audio_status_card.md_bg_color = [0.3, 0.2, 0.05, 1]
-            self.audio_status_label.text = "Подтвердите второй канал"
-            self.audio_status_detail_label.text = f"Подтверждён один канал. Теперь подтвердите {missing} наушник"
+            # Проверяем Watch bridge как фоллбэк (Wear OS)
+            if not self.is_scanning:
+                self._refresh_watch_fallback()
 
-    def confirm_left_headphone(self, *args):
-        self._confirm_headphone_side("left")
-
-    def confirm_right_headphone(self, *args):
-        self._confirm_headphone_side("right")
-
-    def refresh_audio_status(self, dt=None):
-        audio_status = self.audio_bridge.status()
-        if self._headphone_check_running:
-            return audio_status
-
-        if audio_status["connected"]:
-            if self._audio_device_name and self._audio_device_name != audio_status["device_name"]:
-                self.audio_calibration_ok = False
-                self.audio_left_ok = False
-                self.audio_right_ok = False
-                self._update_headphone_button_colors()
-                self._headphone_check_played = False
-            self._audio_device_name = audio_status["device_name"]
-            self.audio_status_card.md_bg_color = [0.08, 0.16, 0.1, 1]
-            if self.audio_calibration_ok:
-                self.audio_status_label.text = "Стерео 4.7 Гц готово"
-                self.audio_status_detail_label.text = audio_status["device_name"]
-            else:
-                self.audio_status_label.text = "Наушники подключены"
-                self.audio_status_detail_label.text = "Запустите тест 4.7 Гц и подтвердите левый и правый наушник"
-        else:
-            self.audio_calibration_ok = False
-            self.audio_left_ok = False
-            self.audio_right_ok = False
-            self._update_headphone_button_colors()
-            self._audio_device_name = None
-            self._headphone_check_played = False
-            self.audio_status_card.md_bg_color = [0.28, 0.16, 0.05, 1]
-            self.audio_status_label.text = "Нужны наушники"
-            self.audio_status_detail_label.text = "Бинауральные частоты работают только в стерео-наушниках"
-        if self.registration_mode == "registration":
-            self._update_registration_summary()
-        return audio_status
-
-    def refresh_watch_status(self, dt=None):
-        if self.is_scanning:
-            return
-
+    def _refresh_watch_fallback(self):
+        """Проверяет Wear OS watch inbox как фоллбэк."""
         watch_status = self.watch_bridge.status()
         rr_count = watch_status["rr_count"]
         bpm = watch_status["heart_rate_bpm"]
         connected = watch_status["connected"]
-        node_connected = watch_status.get("node_connected", False)
-        node_names = ", ".join(watch_status.get("node_names") or [])
-        watch_app_ready = watch_status.get("watch_app_ready", False)
-        watch_app_names = ", ".join(watch_status.get("watch_app_node_names") or [])
-        quality = watch_status["quality"]
-        self._update_metric_display(watch_status)
 
         if rr_count >= 10:
             self.status_card.md_bg_color = [0.08, 0.16, 0.1, 1]
-            self.status_label.text = "Galaxy Watch4 готов"
-            bpm_text = f"HR: {bpm} bpm" if bpm else "HR: ожидаем"
-            self.status_detail_label.text = f"{bpm_text}\nIBI/R-R: {rr_count} интервалов, качество: {quality}"
+            self.status_label.text = "Часы подключены"
+            bpm_text = f"ЧСС: {bpm} bpm" if bpm else "ЧСС: ожидаем"
+            self.status_detail_label.text = f"{bpm_text}\nR-R: {rr_count} интервалов"
         elif connected:
             self.status_card.md_bg_color = [0.3, 0.2, 0.05, 1]
-            self.status_label.text = "Aegis Watch передаёт HR"
-            bpm_text = f"HR: {bpm} bpm" if bpm else "HR получаем"
+            self.status_label.text = "Часы подключены"
+            bpm_text = f"ЧСС: {bpm} bpm" if bpm else "ЧСС получаем"
             self.status_detail_label.text = f"{bpm_text}\nДля HRV нужно минимум 10 IBI, сейчас: {rr_count}"
-        elif watch_app_ready:
-            self.status_card.md_bg_color = [0.3, 0.2, 0.05, 1]
-            self.status_label.text = "Aegis Watch найден"
-            device_text = watch_app_names or "AegisNeuro Watch"
-            self.status_detail_label.text = (
-                f"{device_text}\nМодуль установлен. Запустите измерение на часах "
-                "и разрешите доступ к сенсорам."
-            )
-        elif node_connected:
-            self.status_card.md_bg_color = [0.3, 0.2, 0.05, 1]
-            self.status_label.text = "Часы подключены, модуля нет"
-            device_text = node_names or "Wear OS"
-            self.status_detail_label.text = (
-                f"{device_text}\nСвязь есть, но AegisNeuro Watch не установлен. "
-                "Нажмите «УСТАНОВИТЬ НА ЧАСЫ»."
-            )
-        else:
-            self.status_card.md_bg_color = [0.08, 0.12, 0.18, 1]
-            self.status_label.text = "Ожидаем Galaxy Watch4"
-            self.status_detail_label.text = "Сначала подключите часы в Galaxy Wearable или другое устройство-сенсор"
 
-        if hasattr(self, "watch_install_btn"):
-            install_available = bool(node_connected and not watch_app_ready and not connected)
-            self.watch_install_btn.disabled = not install_available
-            self.watch_install_btn.md_bg_color = (
-                [0.55, 0.22, 0.12, 1] if install_available else [0.18, 0.22, 0.28, 1]
-            )
-
-        self.watch_registration_ok = self._is_watch_ready_for_registration()
-        self._update_headphone_button_colors()
-        if self.registration_mode == "registration":
-            self._update_registration_summary()
-
-    def start_scan(self, *args):
+    def start_ble_scan(self, *args):
+        """Запускает BLE-сканирование для поиска датчика ЧСС."""
         if self.is_scanning:
             return
 
-        rr_data = self.watch_bridge.latest_rr_intervals()
-        watch_status = self.watch_bridge.status()
-        audio_status = self.refresh_audio_status()
-        self._update_metric_display(watch_status)
+        self.is_scanning = True
+        self.action_btn.disabled = True
+        self.action_btn.text = "СКАНИРОВАНИЕ..."
+        self.status_card.md_bg_color = [0.06, 0.14, 0.22, 1]
+        self.status_label.text = "Поиск датчика ЧСС..."
+        self.status_detail_label.text = "Сканирование Bluetooth..."
 
-        if not audio_status["connected"]:
-            self.status_card.md_bg_color = [0.3, 0.2, 0.05, 1]
-            self.status_label.text = "Подключите наушники"
-            self.status_detail_label.text = (
-                "Для нейрорегуляции нужен стерео-аудиовыход: проводные, USB или Bluetooth-наушники."
-            )
-            return
+        # Запускаем сканирование в отдельном потоке, чтобы не блокировать UI
+        import threading
 
-        if not self.audio_calibration_ok:
-            self.status_card.md_bg_color = [0.3, 0.2, 0.05, 1]
-            self.status_label.text = "Проверьте стерео 4.7 Гц"
-            self.status_detail_label.text = (
-                "Нажмите «ТЕСТ 4.7 ГЦ», затем подтвердите отдельно «ЛЕВЫЙ» и «ПРАВЫЙ»."
-            )
-            return
+        def _scan_thread():
+            result = self.ble_scanner.start_scan(timeout_ms=10000)
+            Clock.schedule_once(lambda dt: self._on_ble_scan_result(result))
 
-        if not watch_status.get("node_connected", False) and not watch_status["connected"]:
-            self.status_card.md_bg_color = [0.3, 0.2, 0.05, 1]
-            self.status_label.text = "Часы не подключены"
-            self.status_detail_label.text = "Проверьте Galaxy Watch4 в Galaxy Wearable и дождитесь Wear OS-соединения."
-            return
+        t = threading.Thread(target=_scan_thread, daemon=True)
+        t.start()
 
-        if not watch_status.get("watch_app_ready", False) and not watch_status["connected"]:
-            self.status_card.md_bg_color = [0.3, 0.2, 0.05, 1]
-            self.status_label.text = "Модуль Watch не найден"
-            self.status_detail_label.text = (
-                "Телефон видит часы, но не видит AegisNeuro Watch-компонент с capability aegisneuro_vitals."
-            )
-            return
+    def _on_ble_scan_result(self, result):
+        """Обрабатывает результат BLE-сканирования."""
+        self.is_scanning = False
+        self.action_btn.disabled = False
+        self.action_btn.md_bg_color = [0, 0.78, 0.35, 1]
 
-        if len(rr_data) < 10:
-            bpm = watch_status["heart_rate_bpm"]
-            rr_count = watch_status["rr_count"]
-            quality = watch_status["quality"]
-            self.status_card.md_bg_color = [0.3, 0.2, 0.05, 1]
-            self.status_label.text = "Galaxy Watch4"
-            if bpm:
-                self.status_detail_label.text = (
-                    f"HR: {bpm} bpm\n"
-                    f"IBI/R-R: {rr_count}/10 для HRV, качество: {quality}"
-                )
+        status = result["status"]
+
+        if status == "found_hr":
+            # Найдено устройство с HR Service — подключаемся автоматически
+            best = result.get("best_device", result["devices"][0] if result["devices"] else None)
+            if best:
+                self.action_btn.text = "ПОДКЛЮЧЕНИЕ..."
+                self.status_label.text = f"Найден: {best.get('name', best['address'])}"
+                self.status_detail_label.text = "Подключение к датчику ЧСС..."
+
+                import threading
+
+                def _connect_thread():
+                    success = self.ble_scanner.connect_and_read_hr(best)
+                    Clock.schedule_once(lambda dt: self._on_ble_connected(success, best))
+
+                t = threading.Thread(target=_connect_thread, daemon=True)
+                t.start()
             else:
-                self.status_detail_label.text = "Ожидаем поток HR/IBI с часов. Камера и фонарик отключены."
+                self.action_btn.text = "ПОДКЛЮЧИТЬ ДАТЧИК"
+                self.status_label.text = "Ошибка подключения"
+                self.status_detail_label.text = "Устройство не найдено"
+
+        elif status == "watch_no_hr":
+            # Часы найдены, но не транслируют HR
+            watch = result.get("best_device", result["devices"][0] if result["devices"] else None)
+            watch_name = watch.get("name", "Часы") if watch else "Часы"
+            self.action_btn.text = "ПОДКЛЮЧИТЬ ДАТЧИК"
+            self.status_card.md_bg_color = [0.3, 0.2, 0.05, 1]
+            self.status_label.text = f"{watch_name} найдены"
+            self.status_detail_label.text = (
+                "Для работы нужно установить Heart for Bluetooth на ваши часы\n"
+                "Установить: https://play.google.com/store/apps/details?id=com.easy.heart4bluetooth"
+            )
+
+        elif status == "nothing":
+            # Ничего не найдено
+            self.action_btn.text = "ПОДКЛЮЧИТЬ ДАТЧИК"
+            self.status_card.md_bg_color = [0.35, 0.12, 0.12, 1]
+            self.status_label.text = "Датчик ЧСС не найден"
+            self.status_detail_label.text = (
+                "Без датчика приложение не работает. "
+                "Включите Bluetooth и подключите устройство.\n\n"
+                "Рекомендуемые устройства:\n"
+                "• Polar H10 — профессиональный нагрудный датчик\n"
+                "• Xiaomi Smart Band 8 — фитнес-браслет с ЧСС\n"
+                "• Galaxy Watch 4/5/6 — смарт-часы с датчиком ЧСС"
+            )
+
+        elif status == "bluetooth_off":
+            self.action_btn.text = "ПОДКЛЮЧИТЬ ДАТЧИК"
+            self.status_card.md_bg_color = [0.35, 0.12, 0.12, 1]
+            self.status_label.text = "Bluetooth выключен"
+            self.status_detail_label.text = (
+                "Без датчика приложение не работает. "
+                "Включите Bluetooth и подключите устройство.\n\n"
+                "Рекомендуемые устройства:\n"
+                "• Polar H10 — профессиональный нагрудный датчик\n"
+                "• Xiaomi Smart Band 8 — фитнес-браслет с ЧСС\n"
+                "• Galaxy Watch 4/5/6 — смарт-часы с датчиком ЧСС"
+            )
+
+        else:
+            # error
+            self.action_btn.text = "ПОДКЛЮЧИТЬ ДАТЧИК"
+            self.status_card.md_bg_color = [0.35, 0.12, 0.12, 1]
+            self.status_label.text = "Ошибка сканирования"
+            self.status_detail_label.text = result.get("message", "Не удалось выполнить сканирование BLE")
+
+    def _on_ble_connected(self, success, device_info):
+        """Обрабатывает результат подключения к BLE-устройству."""
+        if success:
+            device_name = device_info.get("name", device_info.get("address", "Датчик"))
+            self.status_card.md_bg_color = [0.08, 0.16, 0.1, 1]
+            self.status_label.text = f"Подключено: {device_name}"
+            self.status_detail_label.text = "Ожидание данных ЧСС..."
+            self.action_btn.text = "НАЧАТЬ ЗАМЕР"
+
+            # Меняем действие кнопки на начало замера
+            self.action_btn.unbind(on_release=self.start_ble_scan)
+            self.action_btn.bind(on_release=self.start_measurement)
+
+            # Запускаем Foreground Service
+            start_foreground_service()
+        else:
+            self.status_card.md_bg_color = [0.35, 0.12, 0.12, 1]
+            self.status_label.text = "Ошибка подключения"
+            self.status_detail_label.text = f"Не удалось подключиться к {device_info.get('name', device_info.get('address', 'устройству'))}"
+            self.action_btn.text = "ПОДКЛЮЧИТЬ ДАТЧИК"
+
+    def start_measurement(self, *args):
+        """Начинает замер HRV с данными от BLE-датчика."""
+        if self.is_scanning:
+            return
+
+        # Проверяем, достаточно ли данных
+        ble_status = self.ble_scanner.get_status()
+        rr_from_ble = ble_status["rr_intervals"]
+        rr_from_watch = self.watch_bridge.latest_rr_intervals()
+
+        # Объединяем RR-интервалы из обоих источников
+        all_rr = list(rr_from_ble) if rr_from_ble else []
+        if not all_rr:
+            all_rr = rr_from_watch
+
+        if len(all_rr) < 10:
+            self.status_card.md_bg_color = [0.3, 0.2, 0.05, 1]
+            self.status_label.text = "Недостаточно данных"
+            self.status_detail_label.text = f"Нужно минимум 10 R-R интервалов, сейчас: {len(all_rr)}. Подождите..."
             return
 
         self.scan_timer = 1
         self.is_scanning = True
 
         self.status_card.md_bg_color = [0.06, 0.14, 0.22, 1]
-        self.status_label.text = "Идёт Watch-замер..."
-        self.status_detail_label.text = "Анализируем данные Galaxy Watch4"
+        self.status_label.text = "Идёт замер..."
+        self.status_detail_label.text = "Анализируем данные сердечного ритма"
 
         self.action_btn.text = "ИДЁТ ЗАМЕР..."
+        self.action_btn.disabled = True
 
-    def on_scan_complete(self):
+    def on_measurement_complete(self):
+        """Завершает замер и отображает результаты."""
         self.is_scanning = False
 
         self.action_btn.disabled = False
         self.action_btn.md_bg_color = [0, 0.78, 0.35, 1]
-        self.action_btn.text = "ПРОВЕРИТЬ WATCH"
+        self.action_btn.text = "ЗАМЕР"
 
-        rr_data = self.watch_bridge.latest_rr_intervals()
+        # Получаем RR-интервалы
+        ble_status = self.ble_scanner.get_status()
+        rr_from_ble = ble_status["rr_intervals"]
+        rr_from_watch = self.watch_bridge.latest_rr_intervals()
 
-        # Анализ через канонический StormPredictor.analyze()
+        rr_data = list(rr_from_ble) if rr_from_ble else rr_from_watch
+
+        if len(rr_data) < 10:
+            self.status_card.md_bg_color = [0.35, 0.12, 0.12, 1]
+            self.status_label.text = "⚠ Замер не удался"
+            self.status_detail_label.text = "Недостаточно данных. Повторите замер."
+            return
+
+        # Анализ через StormPredictor.analyze()
         prediction = self.predictor.analyze(rr_data)
 
         if prediction["status"] == "INSUFFICIENT_DATA":
             self.status_card.md_bg_color = [0.35, 0.12, 0.12, 1]
-            self.status_label.text = "⚠️ Замер не удался"
+            self.status_label.text = "⚠ Замер не удался"
             self.status_detail_label.text = "Недостаточно данных. Повторите замер."
             return
 
@@ -1333,7 +1534,7 @@ class AegisNeuroMobileScreen(MDScreen):
         if prediction["status"] == "STORM_ALERT":
             self.status_card.md_bg_color = [0.4, 0.1, 0.1, 1]
             anomaly_text = prediction["triggers"][0] if prediction["triggers"] else "Хаос ЦНС"
-            self.status_label.text = f"⚠️ Угроза штурма ({prediction['storm_probability_pct']}%)"
+            self.status_label.text = f"⚠ Угроза штурма ({prediction['storm_probability_pct']}%)"
             self.status_detail_label.text = f"{anomaly_text}\nИИ подает: {self.active_frequency} Гц"
         elif prediction["status"] == "WARNING":
             self.status_card.md_bg_color = [0.3, 0.2, 0.05, 1]
@@ -1348,22 +1549,27 @@ class AegisNeuroMobileScreen(MDScreen):
         self.old_stress = self.current_stress
         self.old_rmssd = self.current_rmssd
 
-    def _update_metric_display(self, watch_status=None):
+    def _update_metric_display(self):
         self.stress_value_label.text = str(int(self.current_stress))
         self.rmssd_value_label.text = str(int(self.current_rmssd))
-        
-        if watch_status is None:
-            watch_status = self.watch_bridge.status()
-        bpm = watch_status.get("heart_rate_bpm")
-        if bpm:
-            self.current_bpm = bpm
-            self.hr_value_label.text = str(bpm)
+
+        ble_status = self.ble_scanner.get_status()
+        hr = ble_status["heart_rate"]
+        if hr > 0:
+            self.current_bpm = hr
+            self.hr_value_label.text = str(hr)
         else:
-            self.hr_value_label.text = "--"
+            watch_status = self.watch_bridge.status()
+            bpm = watch_status.get("heart_rate_bpm")
+            if bpm:
+                self.current_bpm = bpm
+                self.hr_value_label.text = str(bpm)
+            else:
+                self.hr_value_label.text = "--"
 
         self.freq_value_label.text = f"{self.active_frequency:.1f}"
         self.storm_value_label.text = str(int(self.storm_prob))
-        
+
         self._update_metric_colors()
 
     def set_male_profile(self, instance):
@@ -1379,10 +1585,10 @@ class AegisNeuroMobileScreen(MDScreen):
     def mobile_lifecycle_loop(self, dt):
         if self.scan_timer > 0:
             self.scan_timer -= 1
-            self.status_label.text = "Идёт Watch-замер..."
+            self.status_label.text = "Идёт замер..."
             self.status_detail_label.text = f"Осталось: {self.scan_timer} сек."
             if self.scan_timer == 0:
-                self.on_scan_complete()
+                self.on_measurement_complete()
             return
 
         self._update_metric_display()
@@ -1417,10 +1623,12 @@ class AegisNeuroMobileApp(MDApp):
         return AegisNeuroMobileScreen()
 
     def on_start(self):
-        """Activity создана. Сенсоры часов подключаются отдельным Wear OS модулем."""
+        """Activity создана. Инициализация BLE и Foreground Service."""
+        if platform == "android":
+            start_foreground_service()
 
     def on_resume(self):
-        """После разблокировки камера не используется."""
+        """После разблокировки экрана."""
 
     def on_pause(self):
         screen = self.root
@@ -1436,8 +1644,11 @@ class AegisNeuroMobileApp(MDApp):
         try:
             if getattr(screen, "audio_engine", None) is not None:
                 screen.audio_engine.stop_tone()
+            if getattr(screen, "ble_scanner", None) is not None:
+                screen.ble_scanner.disconnect()
         except Exception as exc:
-            print(f"[Aegis-System] audio stop: {exc}")
+            print(f"[Aegis-System] stop: {exc}")
+        stop_foreground_service()
 
 
 if __name__ == "__main__":

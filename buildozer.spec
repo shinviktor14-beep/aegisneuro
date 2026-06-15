@@ -39,7 +39,7 @@ android.archs = arm64-v8a
 android.accept_sdk_licenses = True
 
 # Разрешения
-android.permissions = WAKE_LOCK,MODIFY_AUDIO_SETTINGS,BLUETOOTH,BLUETOOTH_ADMIN,BLUETOOTH_SCAN,BLUETOOTH_CONNECT,ACCESS_FINE_LOCATION
+android.permissions = WAKE_LOCK,MODIFY_AUDIO_SETTINGS,BLUETOOTH,BLUETOOTH_ADMIN,BLUETOOTH_SCAN,BLUETOOTH_CONNECT,ACCESS_FINE_LOCATION,FOREGROUND_SERVICE
 android.enable_androidx = True
 # Wear OS Data Layer receiver: accepts watch vitals into watch_payloads.jsonl.
 android.add_src = android_src
