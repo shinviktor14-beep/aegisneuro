@@ -222,7 +222,7 @@ class BLEHeartRateScanner:
         found_watches_no_hr = []
 
         class BleScanCallback(PythonJavaClass):
-            __javainterfaces__ = ["android/bluetooth/le/ScanCallback"]
+            __javainterfaces__ = ["org/aegisneuro/ble/ScanCallbackWrapper$OnScanResultListener"]
 
             def __init__(self):
                 super().__init__()
@@ -231,7 +231,7 @@ class BLEHeartRateScanner:
                 self.all_devices = []
 
             @java_method("(Landroid/bluetooth/le/ScanResult;)V")
-            def onScanResult(self, callbackType, result):
+            def onResult(self, result):
                 device = result.getDevice()
                 name = device.getName() or ""
                 address = device.getAddress()
@@ -266,19 +266,19 @@ class BLEHeartRateScanner:
                         self.found_watches_no_hr.append(dev_info)
 
             @java_method("(I)V")
-            def onScanFailed(self, errorCode):
+            def onError(self, errorCode):
                 log.error(f"BLE scan failed: errorCode={errorCode}")
 
         # Также сканируем без фильтра, чтобы найти часы без HR
         class AllBleScanCallback(PythonJavaClass):
-            __javainterfaces__ = ["android/bluetooth/le/ScanCallback"]
+            __javainterfaces__ = ["org/aegisneuro/ble/ScanCallbackWrapper$OnScanResultListener"]
 
             def __init__(self):
                 super().__init__()
                 self.all_devices = []
 
             @java_method("(Landroid/bluetooth/le/ScanResult;)V")
-            def onScanResult(self, callbackType, result):
+            def onResult(self, result):
                 device = result.getDevice()
                 name = device.getName() or ""
                 address = device.getAddress()
@@ -305,19 +305,22 @@ class BLEHeartRateScanner:
                     })
 
             @java_method("(I)V")
-            def onScanFailed(self, errorCode):
+            def onError(self, errorCode):
                 log.error(f"BLE general scan failed: errorCode={errorCode}")
 
         # Сначала запускаем отфильтрованное сканирование (HR Service)
+        ScanCallbackWrapper = autoclass("org.aegisneuro.ble.ScanCallbackWrapper")
         hr_callback = BleScanCallback()
-        scanner.startScan([scan_filter], settings, hr_callback)
+        hr_callback_wrapper = ScanCallbackWrapper(hr_callback)
+        scanner.startScan([scan_filter], settings, hr_callback_wrapper)
 
         # И общее сканирование (для обнаружения часов без HR)
         general_settings_builder = autoclass("android.bluetooth.le.ScanSettings$Builder")()
         general_settings_builder.setScanMode(autoclass("android.bluetooth.le.ScanSettings").SCAN_MODE_LOW_LATENCY)
         general_settings = general_settings_builder.build()
         general_callback = AllBleScanCallback()
-        scanner.startScan(None, general_settings, general_callback)
+        general_callback_wrapper = ScanCallbackWrapper(general_callback)
+        scanner.startScan(None, general_settings, general_callback_wrapper)
 
         # Ждём timeout_ms
         handler = self._Handler(self._Looper.getMainLooper())
@@ -327,11 +330,11 @@ class BLEHeartRateScanner:
 
         def stop_scan():
             try:
-                scanner.stopScan(hr_callback)
+                scanner.stopScan(hr_callback_wrapper)
             except Exception:
                 pass
             try:
-                scanner.stopScan(general_callback)
+                scanner.stopScan(general_callback_wrapper)
             except Exception:
                 pass
             scan_done.set()
@@ -416,17 +419,19 @@ class BLEHeartRateScanner:
 
         # GattCallback для обработки подключения и характеристик
         ble_scanner = self
+        GattCallbackWrapper = autoclass("org.aegisneuro.ble.GattCallbackWrapper")
 
         class GattCallback(PythonJavaClass):
-            __javainterfaces__ = ["android/bluetooth/BluetoothGattCallback"]
+            __javainterfaces__ = ["org/aegisneuro/ble/GattCallbackWrapper$OnGattEventListener"]
 
             def __init__(self):
                 super().__init__()
                 self.gatt = None
                 self.services_discovered = False
 
-            @java_method("(Landroid/bluetooth/BluetoothGatt;II)V")
-            def onConnectionStateChange(self, gatt, status, newState):
+            @java_method("(II)V")
+            def onConnectionStateChange(self, status, newState):
+                gatt = self.gatt
                 if newState == ble_scanner._BluetoothProfile.STATE_CONNECTED:
                     log.info("BLE: подключено, обнаружение сервисов...")
                     gatt.discoverServices()
@@ -437,8 +442,9 @@ class BLEHeartRateScanner:
                     ble_scanner.connected_device_address = None
                     gatt.close()
 
-            @java_method("(Landroid/bluetooth/BluetoothGatt;I)V")
-            def onServicesDiscovered(self, gatt, status):
+            @java_method("(I)V")
+            def onServicesDiscovered(self, status):
+                gatt = self.gatt
                 if status == ble_scanner._BluetoothGatt.GATT_SUCCESS:
                     self.services_discovered = True
                     services = gatt.getServices()
@@ -501,7 +507,7 @@ class BLEHeartRateScanner:
 
                     log.info("BLE: подписка на HR уведомления активна")
 
-            @java_method("(Landroid/bluetooth/BluetoothGatt;Landroid/bluetooth/BluetoothGattCharacteristic;I)V")
+            @java_method("(Landroid/bluetooth/BluetoothGatt;Landroid/bluetooth/BluetoothGattCharacteristic;)V")
             def onCharacteristicChanged(self, gatt, characteristic):
                 # Парсим Heart Rate Measurement (Bluetooth SIG spec)
                 value = characteristic.getValue()
@@ -542,8 +548,11 @@ class BLEHeartRateScanner:
 
         gatt_callback = GattCallback()
 
+        # Оборачиваем Python-листенер в Java-обёртку, т.к. BluetoothGattCallback абстрактный класс
+        gatt_callback_wrapper = GattCallbackWrapper(gatt_callback)
+
         # Подключаемся (autoConnect=False для быстрого подключения)
-        self._bluetooth_gatt = device.connectGatt(self._activity, False, gatt_callback)
+        self._bluetooth_gatt = device.connectGatt(self._activity, False, gatt_callback_wrapper)
         gatt_callback.gatt = self._bluetooth_gatt
 
         self.connected_device_name = device_info.get("name", "")
