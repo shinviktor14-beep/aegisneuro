@@ -9,7 +9,7 @@ package.domain = org.aegisneuro
 
 # Источник
 source.dir = .
-source.include_exts = py,png,jpg,kv,atlas,json
+source.include_exts = py,png,jpg,kv,atlas,json,apk
 source.exclude_patterns = .git,__pycache__,*.pyc,*.pyo,*.swp,.buildozer,bin,*.md,__pycache__/*
 
 # Версия
@@ -39,7 +39,7 @@ android.archs = arm64-v8a
 android.accept_sdk_licenses = True
 
 # Разрешения
-android.permissions = WAKE_LOCK,MODIFY_AUDIO_SETTINGS,BLUETOOTH,BLUETOOTH_ADMIN,BLUETOOTH_SCAN,BLUETOOTH_CONNECT,ACCESS_FINE_LOCATION,FOREGROUND_SERVICE
+android.permissions = WAKE_LOCK,MODIFY_AUDIO_SETTINGS,BLUETOOTH,BLUETOOTH_ADMIN,BLUETOOTH_SCAN,BLUETOOTH_CONNECT,ACCESS_FINE_LOCATION,FOREGROUND_SERVICE,INTERNET,ACCESS_NETWORK_STATE,ACCESS_WIFI_STATE
 android.enable_androidx = True
 # Wear OS Data Layer receiver: accepts watch vitals into watch_payloads.jsonl.
 android.add_src = android_src

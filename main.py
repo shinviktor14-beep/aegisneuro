@@ -64,6 +64,7 @@ log.info(f"=== AegisNeuro started === platform={platform} log_path={log_path}")
 from aegis.core import AegisRLBrain, StormPredictor, WatchDataBuffer
 from aegis.update_checker import check_for_update
 from aegis_audio_engine import AegisAudioEngine
+from watch_companion_installer import WatchCompanionInstaller
 
 APP_VERSION = "1.0.0"
 
@@ -772,6 +773,7 @@ class AegisNeuroMobileScreen(MDScreen):
         self.watch_bridge = WatchDataBridge()
         self.predictor = StormPredictor()
         self.ble_scanner = BLEHeartRateScanner()
+        self.watch_installer = WatchCompanionInstaller()
 
         self.current_stress = 120.0
         self.current_rmssd = 35.0
@@ -1334,6 +1336,319 @@ class AegisNeuroMobileScreen(MDScreen):
             bpm_text = f"ЧСС: {bpm} bpm" if bpm else "ЧСС получаем"
             self.status_detail_label.text = f"{bpm_text}\nДля HRV нужно минимум 10 IBI, сейчас: {rr_count}"
 
+    # ── Мастер установки companion на Wear OS часы ──
+    def show_watch_companion_wizard(self, watch_device=None):
+        """Показывает пошаговый диалог установки AegisNeuro Companion на часы."""
+        from kivymd.uix.dialog import MDDialog
+        from kivymd.uix.textfield import MDTextField
+
+        self._watch_wizard_step = 0
+
+        # Поле ввода IP:port
+        self._watch_ip_field = MDTextField(
+            hint_text="IP-адрес и порт часов (например 192.168.1.50:5555)",
+            text="",
+            size_hint_x=1.0,
+            mode="rectangle",
+        )
+
+        # Метка статуса
+        self._watch_install_status = ""
+
+        def _build_step_content(step):
+            """Создаёт содержимое диалога для каждого шага."""
+            if step == 0:
+                # Шаг 1-3: Инструкции по включению Developer Options + ADB
+                content = MDBoxLayout(
+                    orientation="vertical",
+                    spacing=dp(8),
+                    size_hint_y=None,
+                    padding=[dp(8), dp(12), dp(8), dp(8)],
+                )
+                content.bind(minimum_height=content.setter("height"))
+
+                steps = [
+                    ("Шаг 1: Включите режим разработчика",
+                     "На часах: Настройки -> О часах -> нажмите\n"
+                     "7 раз на «Номер сборки»."),
+                    ("Шаг 2: Включите отладку ADB",
+                     "На часах: Настройки -> Для разработчиков ->\n"
+                     "включите «Отладка по ADB»."),
+                    ("Шаг 3: Включите беспроводную отладку",
+                     "На часах: Настройки -> Для разработчиков ->\n"
+                     "включите «Беспроводная отладка».\n"
+                     "Запомните IP-адрес и порт\n"
+                     "(например 192.168.1.50:5555)."),
+                ]
+
+                for title, detail in steps:
+                    title_lbl = MDLabel(
+                        text=title,
+                        font_style="Subtitle2",
+                        theme_text_color="Custom",
+                        text_color=[0, 0.9, 0.7, 1],
+                        size_hint_y=None,
+                        height=dp(24),
+                    )
+                    detail_lbl = MDLabel(
+                        text=detail,
+                        font_style="Body2",
+                        theme_text_color="Custom",
+                        text_color=[0.8, 0.85, 0.9, 1],
+                        size_hint_y=None,
+                    )
+                    detail_lbl.bind(
+                        texture_size=lambda inst, ts: setattr(inst, "height", max(dp(36), ts[1]))
+                    )
+                    content.add_widget(title_lbl)
+                    content.add_widget(detail_lbl)
+
+                return content
+
+            elif step == 1:
+                # Ввод IP:port
+                content = MDBoxLayout(
+                    orientation="vertical",
+                    spacing=dp(12),
+                    size_hint_y=None,
+                    padding=[dp(8), dp(12), dp(8), dp(8)],
+                    height=dp(120),
+                )
+                content.add_widget(MDLabel(
+                    text="Введите IP-адрес и порт часов",
+                    font_style="Subtitle2",
+                    theme_text_color="Custom",
+                    text_color=[0, 0.9, 0.7, 1],
+                    size_hint_y=None,
+                    height=dp(28),
+                ))
+                self._watch_ip_field.text = ""
+                content.add_widget(self._watch_ip_field)
+                return content
+
+            elif step == 2:
+                # Статус подключения/установки/запуска
+                content = MDBoxLayout(
+                    orientation="vertical",
+                    spacing=dp(8),
+                    size_hint_y=None,
+                    padding=[dp(8), dp(12), dp(8), dp(8)],
+                    height=dp(80),
+                )
+                self._watch_status_label = MDLabel(
+                    text=self._watch_install_status or "Выполняется...",
+                    font_style="Body1",
+                    theme_text_color="Custom",
+                    text_color=[0.85, 0.92, 0.96, 1],
+                    halign="center",
+                    size_hint_y=None,
+                    height=dp(60),
+                )
+                content.add_widget(self._watch_status_label)
+                return content
+
+            return MDLabel(text="...", size_hint_y=None, height=dp(40))
+
+        def _next_step(instance_dialog):
+            """Переход к следующему шагу мастера."""
+            self._watch_wizard_step += 1
+
+            if self._watch_wizard_step == 1:
+                # Показываем поле ввода IP
+                dialog.content = _build_step_content(1)
+                dialog.buttons = [
+                    MDFlatButton(
+                        text="НАЗАД",
+                        theme_text_color="Custom",
+                        text_color=[0.6, 0.7, 0.75, 1],
+                        on_release=lambda x: _prev_step(),
+                    ),
+                    MDRaisedButton(
+                        text="ПОДКЛЮЧИТЬСЯ",
+                        md_bg_color=[0, 0.78, 0.35, 1],
+                        on_release=lambda x: _do_connect(),
+                    ),
+                ]
+                dialog.update_height()
+
+            elif self._watch_wizard_step == 2:
+                # Подключение и установка
+                _do_full_install()
+
+        def _prev_step():
+            self._watch_wizard_step = max(0, self._watch_wizard_step - 1)
+            dialog.content = _build_step_content(self._watch_wizard_step)
+            if self._watch_wizard_step == 0:
+                dialog.buttons = [
+                    MDRaisedButton(
+                        text="ДАЛЕЕ",
+                        md_bg_color=[0, 0.78, 0.35, 1],
+                        on_release=lambda x: _next_step(dialog),
+                    ),
+                ]
+            dialog.update_height()
+
+        def _do_connect():
+            """Выполняет adb connect к часам."""
+            ip_port = self._watch_ip_field.text.strip()
+            if not ip_port or ":" not in ip_port:
+                self._watch_ip_field.error = True
+                self._watch_ip_field.helper_text = "Формат: 192.168.1.50:5555"
+                self._watch_wizard_step = 1
+                return
+
+            self._watch_wizard_step = 2
+            self._watch_install_status = "Подключение к часам..."
+            dialog.content = _build_step_content(2)
+            dialog.buttons = []
+            dialog.update_height()
+
+            def _connect_thread():
+                success = self.watch_installer.adb_connect(ip_port)
+                Clock.schedule_once(lambda dt: _on_connected(success, ip_port))
+
+            import threading
+            threading.Thread(target=_connect_thread, daemon=True).start()
+
+        def _on_connected(success, ip_port):
+            if success:
+                self._watch_install_status = (
+                    f"Подключено к {ip_port}\n"
+                    "Установка companion..."
+                )
+                if hasattr(self, "_watch_status_label"):
+                    self._watch_status_label.text = self._watch_install_status
+
+                def _install_thread():
+                    # Сначала извлекаем APK
+                    apk_ok = self.watch_installer.extract_watch_apk()
+                    if not apk_ok:
+                        Clock.schedule_once(lambda dt: _on_installed(False, "APK не найден"))
+                        return
+                    inst_ok = self.watch_installer.adb_install()
+                    Clock.schedule_once(lambda dt: _on_installed(inst_ok, None))
+
+                import threading
+                threading.Thread(target=_install_thread, daemon=True).start()
+            else:
+                self._watch_install_status = (
+                    f"Не удалось подключиться к {ip_port}\n"
+                    "Проверьте IP-адрес и что беспроводная отладка включена."
+                )
+                if hasattr(self, "_watch_status_label"):
+                    self._watch_status_label.text = self._watch_install_status
+                dialog.buttons = [
+                    MDFlatButton(
+                        text="ПОВТОРИТЬ",
+                        theme_text_color="Custom",
+                        text_color=[0.6, 0.7, 0.75, 1],
+                        on_release=lambda x: _retry_from_step1(),
+                    ),
+                ]
+                dialog.update_height()
+
+        def _on_installed(success, error_msg):
+            if success:
+                self._watch_install_status = (
+                    "Companion установлен!\nЗапуск на часах..."
+                )
+                if hasattr(self, "_watch_status_label"):
+                    self._watch_status_label.text = self._watch_install_status
+
+                def _start_thread():
+                    started = self.watch_installer.adb_start_companion()
+                    Clock.schedule_once(lambda dt: _on_started(started))
+
+                import threading
+                threading.Thread(target=_start_thread, daemon=True).start()
+            else:
+                msg = error_msg or "Ошибка установки companion"
+                self._watch_install_status = f"Ошибка: {msg}"
+                if hasattr(self, "_watch_status_label"):
+                    self._watch_status_label.text = self._watch_install_status
+                dialog.buttons = [
+                    MDFlatButton(
+                        text="ПОВТОРИТЬ",
+                        theme_text_color="Custom",
+                        text_color=[0.6, 0.7, 0.75, 1],
+                        on_release=lambda x: _retry_from_step1(),
+                    ),
+                ]
+                dialog.update_height()
+
+        def _on_started(success):
+            if success:
+                self._watch_install_status = (
+                    "Companion запущен!\n\n"
+                    "Теперь часы будут транслировать ЧСС.\n"
+                    "Нажмите «ПОДКЛЮЧИТЬ ДАТЧИК» для нового сканирования."
+                )
+                if hasattr(self, "_watch_status_label"):
+                    self._watch_status_label.text = self._watch_install_status
+                # Восстанавливаем кнопку
+                self.action_btn.text = "ПОДКЛЮЧИТЬ ДАТЧИК"
+                self.action_btn.unbind(on_release=lambda *a: None)
+                self.action_btn.bind(on_release=self.start_ble_scan)
+                self.status_card.md_bg_color = [0.08, 0.16, 0.1, 1]
+                self.status_label.text = "Companion установлен"
+                self.status_detail_label.text = "Часы готовы к передаче ЧСС"
+            else:
+                self._watch_install_status = (
+                    "Companion установлен, но не удалось\n"
+                    "запустить автоматически. Запустите вручную\n"
+                    "на часах."
+                )
+                if hasattr(self, "_watch_status_label"):
+                    self._watch_status_label.text = self._watch_install_status
+
+            dialog.buttons = [
+                MDRaisedButton(
+                    text="ЗАКРЫТЬ",
+                    md_bg_color=[0, 0.6, 0.8, 1],
+                    on_release=lambda x: dialog.dismiss(),
+                ),
+            ]
+            dialog.update_height()
+
+        def _do_full_install():
+            """Полный цикл установки из поля ввода IP."""
+            _do_connect()
+
+        def _retry_from_step1():
+            self._watch_wizard_step = 1
+            self.watch_installer.reset()
+            dialog.content = _build_step_content(1)
+            dialog.buttons = [
+                MDFlatButton(
+                    text="НАЗАД",
+                    theme_text_color="Custom",
+                    text_color=[0.6, 0.7, 0.75, 1],
+                    on_release=lambda x: _prev_step(),
+                ),
+                MDRaisedButton(
+                    text="ПОДКЛЮЧИТЬСЯ",
+                    md_bg_color=[0, 0.78, 0.35, 1],
+                    on_release=lambda x: _do_connect(),
+                ),
+            ]
+            dialog.update_height()
+
+        # Создаём диалог
+        dialog = MDDialog(
+            title="Установка companion на часы",
+            type="custom",
+            content_cls=_build_step_content(0),
+            buttons=[
+                MDRaisedButton(
+                    text="ДАЛЕЕ",
+                    md_bg_color=[0, 0.78, 0.35, 1],
+                    on_release=lambda x: _next_step(dialog),
+                ),
+            ],
+        )
+        self._watch_install_dialog = dialog
+        dialog.open()
+
     def start_ble_scan(self, *args):
         """Запускает BLE-сканирование для поиска датчика ЧСС."""
         if self.is_scanning:
@@ -1386,15 +1701,17 @@ class AegisNeuroMobileScreen(MDScreen):
                 self.status_detail_label.text = "Устройство не найдено"
 
         elif status == "watch_no_hr":
-            # Часы найдены, но не транслируют HR
+            # Часы найдены, но не транслируют HR — запускаем установку companion
             watch = result.get("best_device", result["devices"][0] if result["devices"] else None)
             watch_name = watch.get("name", "Часы") if watch else "Часы"
-            self.action_btn.text = "ПОДКЛЮЧИТЬ ДАТЧИК"
-            self.status_card.md_bg_color = [0.3, 0.2, 0.05, 1]
+            self.action_btn.text = "УСТАНОВИТЬ COMPANION"
+            self.action_btn.unbind(on_release=self.start_ble_scan)
+            self.action_btn.bind(on_release=lambda *a: self.show_watch_companion_wizard(watch))
+            self.status_card.md_bg_color = [0.15, 0.12, 0.25, 1]
             self.status_label.text = f"{watch_name} найдены"
             self.status_detail_label.text = (
-                "Для работы нужно установить Heart for Bluetooth на ваши часы\n"
-                "Установить: https://play.google.com/store/apps/details?id=com.easy.heart4bluetooth"
+                "Часы без AegisNeuro Companion.\n"
+                "Нажмите «УСТАНОВИТЬ COMPANION» для автоматической установки."
             )
 
         elif status == "nothing":
