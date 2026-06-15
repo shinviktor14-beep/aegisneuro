@@ -48,6 +48,11 @@ jobs:
     needs: test
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+      # Keystore env vars for buildozer signing (values from GitHub Secrets)
+      AEGIS_KEYSTORE: ${{ github.workspace }}/keystore/aegisneuro-release.keystore
+      AEGIS_KEY_ALIAS: aegisneuro
+      AEGIS_KEYSTORE_PASS: ${{ secrets.AEGIS_KEYSTORE_PASS }}
+      AEGIS_KEY_PASS: ${{ secrets.AEGIS_KEY_PASS }}
     steps:
       - uses: actions/checkout@v4
 
@@ -96,14 +101,11 @@ jobs:
           else
             echo "cmdline-tools already present"
           fi
-          # Принимаем все лицензии (для уже скачанного SDK, build-tools и platform-tools)
           yes 2>/dev/null | "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
-          # Докачиваем build-tools и platform-tools, чтобы buildozer не искал старый tools/bin/sdkmanager
           "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" \
             "platform-tools" \
             "platforms;android-33" \
             "build-tools;33.0.2" >/dev/null 2>&1 || true
-          # Проверяем, что buildozer увидит sdkmanager
           ls -la "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" || true
           mkdir -p "${ANDROID_SDK_ROOT}/tools/bin"
           ln -sf "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" \
@@ -142,27 +144,28 @@ jobs:
           echo "=== JAVA_HOME: ${JAVA_HOME:-not set} ==="
           echo "=== java version: $(java -version 2>&1) ==="
           echo "=== buildozer.spec sha: $(sha256sum buildozer.spec | cut -d' ' -f1) ==="
+          echo "=== keystore present: $(test -f keystore/aegisneuro-release.keystore && echo YES || echo NO) ==="
 
-      - name: Build APK (debug, arm64)
+      - name: Build Phone APK (release, arm64)
         env:
           GRADLE_OPTS: "-Xmx4g -Dorg.gradle.jvmargs=-Xmx4g"
           JAVA_TOOL_OPTIONS: "-Xmx4g"
         run: |
           set -o pipefail
-          buildozer -v android debug 2>&1 | tee build.log
+          buildozer -v android release 2>&1 | tee build.log
           echo "=== APK contents ==="
           ls -laR bin/ 2>&1 | head -50 || true
 
-      # ── Wear OS APK (same runner = same debug.keystore) ──
+      # ── Wear OS APK (same release keystore) ──
       - name: Setup Gradle for Wear
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.10.2"
           validate-wrappers: false
 
-      - name: Build Wear APK
+      - name: Build Wear APK (release)
         working-directory: wear
-        run: gradle :app:assembleDebug
+        run: gradle :app:assembleRelease
 
       - name: Upload build log on failure
         if: failure()
@@ -180,7 +183,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: aegisneuro-arm64-debug
+          name: aegisneuro-arm64-release
           path: |
             bin/*.apk
             !bin/*.aab
@@ -191,8 +194,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: aegisneuro-watch-debug
-          path: wear/app/build/outputs/apk/debug/*.apk
+          name: aegisneuro-watch-release
+          path: wear/app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 14
 
@@ -202,9 +205,9 @@ jobs:
         with:
           tag_name: v${{ github.run_number }}
           name: "Build #${{ github.run_number }}"
-          body: "Auto-built Phone + Watch APKs from commit ${{ github.sha }}"
+          body: "Auto-built Phone + Watch APKs (release-signed) from commit ${{ github.sha }}"
           files: |
             bin/*.apk
-            wear/app/build/outputs/apk/debug/*.apk
+            wear/app/build/outputs/apk/release/*.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
