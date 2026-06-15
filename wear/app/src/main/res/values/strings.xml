@@ -1,3 +1,8 @@
 <resources>
     <string name="app_name">Aegis Sensor</string>
+    <string name="notification_channel_name">Мониторинг пульса</string>
+    <string name="notification_channel_desc">Непрерывный мониторинг сердечного ритма</string>
+    <string name="notification_title">Aegis: Мониторинг HR</string>
+    <string name="notification_measuring">Измерение пульса…</string>
+    <string name="notification_stopped">Мониторинг остановлен</string>
 </resources>

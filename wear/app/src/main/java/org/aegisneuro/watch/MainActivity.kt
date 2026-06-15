@@ -1,6 +1,10 @@
 package org.aegisneuro.watch
 
 import android.Manifest
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Bundle
@@ -12,66 +16,44 @@ import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
-import androidx.health.services.client.HealthServices
-import androidx.health.services.client.MeasureCallback
-import androidx.health.services.client.data.Availability
-import androidx.health.services.client.data.DataPointContainer
-import androidx.health.services.client.data.DataType
-import androidx.health.services.client.data.DeltaDataType
-import com.google.android.gms.wearable.MessageClient
-import com.google.android.gms.wearable.Wearable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.tasks.await
-import org.json.JSONArray
-import org.json.JSONObject
-import java.nio.charset.StandardCharsets
-import kotlin.math.roundToInt
-
-private const val VITALS_PATH = "/aegis/watch/vitals"
 
 class MainActivity : ComponentActivity() {
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private val measureClient by lazy { HealthServices.getClient(this).measureClient }
-    private val messageClient: MessageClient by lazy { Wearable.getMessageClient(this) }
 
     private lateinit var statusText: TextView
     private lateinit var hrText: TextView
     private lateinit var detailText: TextView
     private lateinit var actionButton: Button
 
-    private var isMeasuring = false
-    private var lastHeartRateBpm: Int? = null
-    private var senderJob: Job? = null
+    private var isMonitoring = false
+
+    /** Receives HR updates broadcast by HrMonitorService so the UI stays current. */
+    private val hrUpdateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == ACTION_HR_UPDATE) {
+                val bpm = intent.getIntExtra(EXTRA_HR_BPM, -1)
+                if (bpm > 0) {
+                    hrText.text = "$bpm bpm"
+                    detailText.text = "HR получен. Расчет IBI активен."
+                }
+            }
+        }
+    }
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted: Boolean ->
         if (granted) {
-            startMeasurement()
+            startMonitoring()
         } else {
             setStatus("Нет доступа", "Разрешите BODY_SENSORS на часах")
-        }
-    }
-
-    private val measureCallback = object : MeasureCallback {
-        override fun onAvailabilityChanged(dataType: DeltaDataType<*, *>, availability: Availability) {
-            setStatus("Сенсор", availability.toString())
-        }
-
-        override fun onDataReceived(data: DataPointContainer) {
-            val heartRates = data.getData(DataType.HEART_RATE_BPM)
-            val latestBpm = heartRates.lastOrNull()?.value?.roundToInt()
-            if (latestBpm != null) {
-                lastHeartRateBpm = latestBpm
-                hrText.text = "$latestBpm bpm"
-                detailText.text = "HR получен. Расчет IBI активен."
-                sendVitals(latestBpm, generateSyntheticIbi(latestBpm), "hr_only")
-            }
         }
     }
 
@@ -79,12 +61,32 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         buildUi()
         setStatus("Готово", "Нажмите старт для потока HR")
+        registerReceiver(hrUpdateReceiver, IntentFilter(ACTION_HR_UPDATE))
+        checkIfServiceRunning()
     }
 
     override fun onDestroy() {
-        stopMeasurement()
+        unregisterReceiver(hrUpdateReceiver)
         scope.cancel()
         super.onDestroy()
+    }
+
+    private fun checkIfServiceRunning() {
+        // Simple heuristic: if we can detect the service is running, reflect it in UI.
+        // Since ForegroundService persists across activity recreation, check via intent.
+        // We'll poll a small flag via shared prefs that the service updates.
+        val prefs = getSharedPreferences("aegis_hr_prefs", Context.MODE_PRIVATE)
+        val running = prefs.getBoolean("hr_monitor_active", false)
+        if (running) {
+            isMonitoring = true
+            actionButton.text = "СТОП"
+            setStatus("Измеряем", "Отправляем HR на телефон")
+            val lastBpm = prefs.getInt("last_hr_bpm", -1)
+            if (lastBpm > 0) {
+                hrText.text = "$lastBpm bpm"
+                detailText.text = "HR получен. Расчет IBI активен."
+            }
+        }
     }
 
     private fun buildUi() {
@@ -120,8 +122,8 @@ class MainActivity : ComponentActivity() {
         actionButton = Button(this).apply {
             text = "СТАРТ"
             setOnClickListener {
-                if (isMeasuring) {
-                    stopMeasurement()
+                if (isMonitoring) {
+                    stopMonitoring()
                 } else {
                     ensurePermissionAndStart()
                 }
@@ -139,90 +141,36 @@ class MainActivity : ComponentActivity() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.BODY_SENSORS)
             == PackageManager.PERMISSION_GRANTED
         ) {
-            startMeasurement()
+            startMonitoring()
         } else {
             permissionLauncher.launch(Manifest.permission.BODY_SENSORS)
         }
     }
 
-    private fun startMeasurement() {
-        if (isMeasuring) return
-        scope.launch {
-            try {
-                measureClient.registerMeasureCallback(DataType.HEART_RATE_BPM, measureCallback)
-                isMeasuring = true
-                actionButton.text = "СТОП"
-                setStatus("Измеряем", "Отправляем HR на телефон")
-                startHeartbeatSender()
-            } catch (exc: Exception) {
-                setStatus("Ошибка", exc.message ?: "Health Services")
-            }
-        }
+    private fun startMonitoring() {
+        if (isMonitoring) return
+        isMonitoring = true
+        actionButton.text = "СТОП"
+        setStatus("Измеряем", "Отправляем HR на телефон")
+        HrMonitorService.start(this)
     }
 
-    private fun stopMeasurement() {
-        if (!isMeasuring) return
-        senderJob?.cancel()
-        senderJob = null
-        scope.launch {
-            try {
-                measureClient.unregisterMeasureCallbackAsync(DataType.HEART_RATE_BPM, measureCallback)
-            } catch (_: Exception) {
-            } finally {
-                isMeasuring = false
-                actionButton.text = "СТАРТ"
-                setStatus("Остановлено", "Поток HR остановлен")
-            }
-        }
-    }
-
-    private fun startHeartbeatSender() {
-        senderJob?.cancel()
-        senderJob = scope.launch {
-            while (isMeasuring) {
-                lastHeartRateBpm?.let { sendVitals(it, generateSyntheticIbi(it), "hr_only") }
-                kotlinx.coroutines.delay(2_000)
-            }
-        }
-    }
-
-    private fun sendVitals(heartRateBpm: Int, ibiMs: List<Int>, quality: String) {
-        scope.launch(Dispatchers.IO) {
-            val payload = JSONObject()
-                .put("source", "galaxy_watch4")
-                .put("timestamp_ms", System.currentTimeMillis())
-                .put("heart_rate_bpm", heartRateBpm)
-                .put("ibi_ms", JSONArray(ibiMs))
-                .put("quality", quality)
-                .toString()
-                .toByteArray(StandardCharsets.UTF_8)
-
-            try {
-                val nodes = Wearable.getNodeClient(this@MainActivity).connectedNodes.await()
-                nodes.forEach { node ->
-                    messageClient.sendMessage(node.id, VITALS_PATH, payload).await()
-                }
-            } catch (exc: Exception) {
-                runOnUiThread {
-                    detailText.text = "Телефон не найден: ${exc.message ?: "Data Layer"}"
-                }
-            }
-        }
-    }
-
-    private fun generateSyntheticIbi(bpm: Int): List<Int> {
-        val avgInterval = 60000.0 / bpm
-        val ibiList = mutableListOf<Int>()
-        for (i in 0 until 15) {
-            val rsaFactor = java.lang.Math.sin(i * 0.8) * 45.0
-            val randomNoise = (java.lang.Math.random() * 20.0 - 10.0)
-            ibiList.add((avgInterval + rsaFactor + randomNoise).roundToInt())
-        }
-        return ibiList
+    private fun stopMonitoring() {
+        if (!isMonitoring) return
+        isMonitoring = false
+        actionButton.text = "СТАРТ"
+        setStatus("Остановлено", "Поток HR остановлен")
+        hrText.text = "-- bpm"
+        HrMonitorService.stop(this)
     }
 
     private fun setStatus(title: String, detail: String) {
         statusText.text = title
         detailText.text = detail
+    }
+
+    companion object {
+        const val ACTION_HR_UPDATE = "org.aegisneuro.watch.HR_UPDATE"
+        const val EXTRA_HR_BPM = "hr_bpm"
     }
 }
