@@ -15,6 +15,27 @@ android {
         versionName = "0.1.0"
     }
 
+    // Единый release keystore для phone + watch (пароли из env vars)
+    signingConfigs {
+        create("release") {
+            storeFile = file(System.getenv("AEGIS_KEYSTORE") ?: "../keystore/aegisneuro-release.keystore")
+            storePassword = System.getenv("AEGIS_KEYSTORE_PASS") ?: ""
+            keyAlias = System.getenv("AEGIS_KEY_ALIAS") ?: "aegisneuro"
+            keyPassword = System.getenv("AEGIS_KEY_PASS") ?: ""
+        }
+    }
+
+    buildTypes {
+        release {
+            signingConfig = signingConfigs.getByName("release")
+            isMinifyEnabled = false
+        }
+        debug {
+            // debug тоже подписываем release-ключом, чтобы обновления работали
+            signingConfig = signingConfigs.getByName("release")
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

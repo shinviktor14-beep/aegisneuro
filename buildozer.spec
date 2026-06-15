@@ -50,12 +50,12 @@ android.gradle_dependencies = com.google.android.gms:play-services-wearable:19.0
 # Kivy 2.3.1 поддерживает Python 3.8-3.13
 requirements = hostpython3==3.13.5,python3==3.13.5,kivy==2.3.1,numpy,pyjnius,kivymd
 
-# Signing (release) — ключи задаются через env vars:
-#   AEGIS_KEYSTORE=/path/to/release.keystore
-#   AEGIS_KEYSTORE_PASS=***
-#   AEGIS_KEY_ALIAS=release
-#   AEGIS_KEY_PASS=***
-# Если vars не заданы — собирается debug (без подписи).
+# Signing (release) — единый keystore для phone + watch
+# Пароли берутся из env vars (см. keystore/keystore.env или CI Secrets).
+android.keystore = %(AEGIS_KEYSTORE)s
+android.key.alias = %(AEGIS_KEY_ALIAS)s
+android.key.pass = %(AEGIS_KEY_PASS)s
+android.store.pass = %(AEGIS_KEYSTORE_PASS)s
 #android.release.artifact = aab
 
 [buildozer]
