@@ -73,38 +73,27 @@ APP_VERSION = "1.0.0"
 # (classes4.dex etc.) that the default system ClassLoader doesn't know about.
 # We must use the app's PathClassLoader (obtained via the Activity) to resolve them.
 def _autoclass_multidex(class_name):
-    """Load a Java class using the app's ClassLoader (handles multidex).
+    """Load a Java class using the app's ClassLoader (handles multidex)."""
+    from jnius import autoclass
 
-    Falls back to regular autoclass on non-Android or if reflection fails.
-    """
     if platform != "android":
-        from jnius import autoclass
         return autoclass(class_name)
 
-    from jnius import autoclass, cast
-
-    # Access mActivity first – this primes pyjnius with the correct classloader
-    # on most Kivy/p4a builds, then try autoclass.
+    # Set the app's ClassLoader as thread context ClassLoader
+    # This makes pyjnius autoclass find classes in secondary DEX files
     try:
-        _act = autoclass("org.kivy.android.PythonActivity").mActivity
-        # If mActivity is available, autoclass should now resolve multidex classes
-        return autoclass(class_name)
+        _activity = autoclass("org.kivy.android.PythonActivity").mActivity
+        _loader = _activity.getClassLoader()
+        _thread = autoclass("java.lang.Thread").currentThread()
+        _old = _thread.getContextClassLoader()
+        _thread.setContextClassLoader(_loader)
+        try:
+            return autoclass(class_name)
+        finally:
+            _thread.setContextClassLoader(_old)
     except Exception:
-        pass
+        return autoclass(class_name)
 
-    # Last resort: use Java reflection loadClass via the app ClassLoader
-    _act = autoclass("org.kivy.android.PythonActivity").mActivity
-    _loader = _act.getClassLoader()
-    _cls = _loader.loadClass(class_name)
-    # cast the reflected Class object so pyjnius recognises it
-    return cast("java.lang.Class", _cls)
-
-# ==============================================================================
-# BLE СКАНЕР И КЛИЕНТ ЧАСТОТЫ СЕРДЦА (UUID 0x180D)
-# Использует pyjnius для доступа к Android BLE API напрямую
-# ==============================================================================
-
-# Стандартные BLE UUID для Heart Rate Service
 HR_SERVICE_UUID = "0000180d-0000-1000-8000-00805f9b34fb"
 HR_MEASUREMENT_CHAR_UUID = "00002a37-0000-1000-8000-00805f9b34fb"
 
