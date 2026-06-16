@@ -45,6 +45,7 @@ android.enable_androidx = True
 android.add_src = android_src
 android.add_manifest_xml = android_manifest/aegis_watch_receiver.xml
 android.gradle_dependencies = com.google.android.gms:play-services-wearable:19.0.0
+android.multidex = no
 
 # Зависимости для сборки
 # Kivy 2.3.1 поддерживает Python 3.8-3.13
