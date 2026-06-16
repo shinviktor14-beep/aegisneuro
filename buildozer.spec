@@ -52,10 +52,10 @@ requirements = hostpython3==3.13.5,python3==3.13.5,kivy==2.3.1,numpy,pyjnius,kiv
 
 # Signing (release) — единый keystore для phone + watch
 # Пароли берутся из env vars (см. keystore/keystore.env или CI Secrets).
-android.keystore = %(AEGIS_KEYSTORE)s
-android.key.alias = %(AEGIS_KEY_ALIAS)s
-android.key.pass = %(AEGIS_KEY_PASS)s
-android.store.pass = %(AEGIS_KEYSTORE_PASS)s
+#android.keystore = debug_keystore
+#android.key.alias = debug
+#android.key.pass = debug
+#android.store.pass = debug
 #android.release.artifact = aab
 
 [buildozer]
