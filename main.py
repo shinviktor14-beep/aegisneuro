@@ -67,6 +67,38 @@ from aegis_audio_engine import AegisAudioEngine
 
 APP_VERSION = "1.0.0"
 
+
+# ── Multidex classloader helper ──
+# Custom classes in org.aegisneuro.aegisneuro live in secondary DEX files
+# (classes4.dex etc.) that the default system ClassLoader doesn't know about.
+# We must use the app's PathClassLoader (obtained via the Activity) to resolve them.
+def _autoclass_multidex(class_name):
+    """Load a Java class using the app's ClassLoader (handles multidex).
+
+    Falls back to regular autoclass on non-Android or if reflection fails.
+    """
+    if platform != "android":
+        from jnius import autoclass
+        return autoclass(class_name)
+
+    from jnius import autoclass, cast
+
+    # Access mActivity first – this primes pyjnius with the correct classloader
+    # on most Kivy/p4a builds, then try autoclass.
+    try:
+        _act = autoclass("org.kivy.android.PythonActivity").mActivity
+        # If mActivity is available, autoclass should now resolve multidex classes
+        return autoclass(class_name)
+    except Exception:
+        pass
+
+    # Last resort: use Java reflection loadClass via the app ClassLoader
+    _act = autoclass("org.kivy.android.PythonActivity").mActivity
+    _loader = _act.getClassLoader()
+    _cls = _loader.loadClass(class_name)
+    # cast the reflected Class object so pyjnius recognises it
+    return cast("java.lang.Class", _cls)
+
 # ==============================================================================
 # BLE СКАНЕР И КЛИЕНТ ЧАСТОТЫ СЕРДЦА (UUID 0x180D)
 # Использует pyjnius для доступа к Android BLE API напрямую
@@ -315,7 +347,7 @@ class BLEHeartRateScanner:
 
         # Java-обёртки ScanCallback (вместо PythonJavaClass, который не работает
         # с абстрактными классами android/bluetooth/le/ScanCallback)
-        AegisScanCallback = autoclass("org.aegisneuro.aegisneuro.AegisScanCallback")
+        AegisScanCallback = _autoclass_multidex("org.aegisneuro.aegisneuro.AegisScanCallback")
 
         # Сначала запускаем отфильтрованное сканирование (HR Service)
         hr_callback = AegisScanCallback()
@@ -425,7 +457,7 @@ class BLEHeartRateScanner:
 
         # Java-обёртка GattCallback (вместо PythonJavaClass, который не работает
         # с абстрактными классами android/bluetooth/BluetoothGattCallback)
-        AegisGattCallback = autoclass("org.aegisneuro.aegisneuro.AegisGattCallback")
+        AegisGattCallback = _autoclass_multidex("org.aegisneuro.aegisneuro.AegisGattCallback")
         gatt_callback = AegisGattCallback()
 
         # Подключаемся (autoConnect=False для быстрого подключения)
@@ -515,7 +547,7 @@ def start_foreground_service():
         else:
             builder = NotificationBuilder(activity)
 
-        builder.setSmallIcon(autoclass("org.aegisneuro.aegisneuro.R").drawable.icon)
+        builder.setSmallIcon(_autoclass_multidex("org.aegisneuro.aegisneuro.R").drawable.icon)
         builder.setContentTitle("AegisNeuro работает")
         builder.setContentText("Мониторинг ЧСС и нейрорегуляция активны")
         builder.setOngoing(True)
@@ -532,7 +564,7 @@ def start_foreground_service():
 
         # Запускаем как Foreground Service через p4a service API
         try:
-            service_class = autoclass("org.aegisneuro.aegisneuro.ServiceAegisNeuro")
+            service_class = _autoclass_multidex("org.aegisneuro.aegisneuro.ServiceAegisNeuro")
             activity.startForegroundService(Intent(activity, service_class))
 
             # Альтернативно, если p4a service не определён, используем сервис Kivy
@@ -571,7 +603,7 @@ def stop_foreground_service():
             pass
 
         try:
-            service_class = autoclass("org.aegisneuro.aegisneuro.ServiceAegisNeuro")
+            service_class = _autoclass_multidex("org.aegisneuro.aegisneuro.ServiceAegisNeuro")
             PythonActivity = autoclass("org.kivy.android.PythonActivity")
             activity = PythonActivity.mActivity
             if activity:
