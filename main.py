@@ -193,6 +193,104 @@ class BLEHeartRateScanner:
                 "message": f"Ошибка сканирования: {exc}",
             }
 
+    def _extract_hr_devices(self, callback):
+        """Извлекает устройства с HR Service из результатов AegisScanCallback."""
+        results = []
+        java_results = callback.getResults()
+        if java_results is None:
+            return results
+        seen_addrs = set()
+        for result in java_results:
+            device = result.getDevice()
+            name = device.getName() or ""
+            address = device.getAddress()
+            if address in seen_addrs:
+                continue
+            scan_record = result.getScanRecord()
+            has_hr_service = False
+            if scan_record:
+                service_uuids = scan_record.getServiceUuids()
+                if service_uuids:
+                    for pu in service_uuids:
+                        if pu.getUuid().toString() == HR_SERVICE_UUID:
+                            has_hr_service = True
+                            break
+            is_watch = self._is_watch_device(name)
+            if has_hr_service:
+                seen_addrs.add(address)
+                results.append({
+                    "name": name,
+                    "address": address,
+                    "has_hr_service": has_hr_service,
+                    "is_watch": is_watch,
+                })
+        return results
+
+    def _extract_watch_devices(self, callback):
+        """Извлекает часы без HR Service из результатов AegisScanCallback."""
+        results = []
+        java_results = callback.getResults()
+        if java_results is None:
+            return results
+        seen_addrs = set()
+        for result in java_results:
+            device = result.getDevice()
+            name = device.getName() or ""
+            address = device.getAddress()
+            if address in seen_addrs:
+                continue
+            seen_addrs.add(address)
+            scan_record = result.getScanRecord()
+            has_hr_service = False
+            if scan_record:
+                service_uuids = scan_record.getServiceUuids()
+                if service_uuids:
+                    for pu in service_uuids:
+                        if pu.getUuid().toString() == HR_SERVICE_UUID:
+                            has_hr_service = True
+                            break
+            is_watch = self._is_watch_device(name)
+            if is_watch and not has_hr_service:
+                results.append({
+                    "name": name,
+                    "address": address,
+                    "has_hr_service": has_hr_service,
+                    "is_watch": is_watch,
+                })
+        return results
+
+    def _extract_all_devices(self, callback):
+        """Извлекает все устройства из результатов AegisScanCallback."""
+        results = []
+        java_results = callback.getResults()
+        if java_results is None:
+            return results
+        seen_addrs = set()
+        for result in java_results:
+            device = result.getDevice()
+            name = device.getName() or ""
+            address = device.getAddress()
+            if address in seen_addrs:
+                continue
+            seen_addrs.add(address)
+            scan_record = result.getScanRecord()
+            has_hr_service = False
+            if scan_record:
+                service_uuids = scan_record.getServiceUuids()
+                if service_uuids:
+                    for pu in service_uuids:
+                        if pu.getUuid().toString() == HR_SERVICE_UUID:
+                            has_hr_service = True
+                            break
+            is_watch = self._is_watch_device(name)
+            results.append({
+                "name": name,
+                "address": address,
+                "has_hr_service": has_hr_service,
+                "is_watch": is_watch,
+            })
+        return results
+
     def _android_scan(self, timeout_ms=10000):
         """Реальное Android BLE-сканирование через pyjnius."""
         from jnius import autoclass, cast, PythonJavaClass, java_method
@@ -215,107 +313,19 @@ class BLEHeartRateScanner:
         settings_builder.setScanMode(autoclass("android.bluetooth.le.ScanSettings").SCAN_MODE_LOW_LATENCY)
         settings = settings_builder.build()
 
-        # Кастомный ScanCallback через PythonJavaClass
-        found_devices = []
-        found_hr_devices = []
-        found_watches_no_hr = []
-
-        class BleScanCallback(PythonJavaClass):
-            __javainterfaces__ = ["android/bluetooth/le/ScanCallback"]
-
-            def __init__(self):
-                super().__init__()
-                self.found_hr_devices = []
-                self.found_watches_no_hr = []
-                self.all_devices = []
-
-            @java_method("(Landroid/bluetooth/le/ScanResult;)V")
-            def onScanResult(self, callbackType, result):
-                device = result.getDevice()
-                name = device.getName() or ""
-                address = device.getAddress()
-
-                # Проверяем, рекламирует ли устройство HR Service
-                scan_record = result.getScanRecord()
-                has_hr_service = False
-                if scan_record:
-                    service_uuids = scan_record.getServiceUuids()
-                    if service_uuids:
-                        for pu in service_uuids:
-                            if pu.getUuid().toString() == HR_SERVICE_UUID:
-                                has_hr_service = True
-                                break
-
-                is_watch = self._is_watch_device(name)
-
-                dev_info = {
-                    "name": name,
-                    "address": address,
-                    "has_hr_service": has_hr_service,
-                    "is_watch": is_watch,
-                }
-
-                # Избегаем дубликатов по адресу
-                existing_addrs = [d["address"] for d in self.all_devices]
-                if address not in existing_addrs:
-                    self.all_devices.append(dev_info)
-                    if has_hr_service:
-                        self.found_hr_devices.append(dev_info)
-                    elif is_watch:
-                        self.found_watches_no_hr.append(dev_info)
-
-            @java_method("(I)V")
-            def onScanFailed(self, errorCode):
-                log.error(f"BLE scan failed: errorCode={errorCode}")
-
-        # Также сканируем без фильтра, чтобы найти часы без HR
-        class AllBleScanCallback(PythonJavaClass):
-            __javainterfaces__ = ["android/bluetooth/le/ScanCallback"]
-
-            def __init__(self):
-                super().__init__()
-                self.all_devices = []
-
-            @java_method("(Landroid/bluetooth/le/ScanResult;)V")
-            def onScanResult(self, callbackType, result):
-                device = result.getDevice()
-                name = device.getName() or ""
-                address = device.getAddress()
-
-                scan_record = result.getScanRecord()
-                has_hr_service = False
-                if scan_record:
-                    service_uuids = scan_record.getServiceUuids()
-                    if service_uuids:
-                        for pu in service_uuids:
-                            if pu.getUuid().toString() == HR_SERVICE_UUID:
-                                has_hr_service = True
-                                break
-
-                is_watch = self._is_watch_device(name)
-
-                existing_addrs = [d["address"] for d in self.all_devices]
-                if address not in existing_addrs:
-                    self.all_devices.append({
-                        "name": name,
-                        "address": address,
-                        "has_hr_service": has_hr_service,
-                        "is_watch": is_watch,
-                    })
-
-            @java_method("(I)V")
-            def onScanFailed(self, errorCode):
-                log.error(f"BLE general scan failed: errorCode={errorCode}")
+        # Java-обёртки ScanCallback (вместо PythonJavaClass, который не работает
+        # с абстрактными классами android/bluetooth/le/ScanCallback)
+        AegisScanCallback = autoclass("org.aegisneuro.aegisneuro.AegisScanCallback")
 
         # Сначала запускаем отфильтрованное сканирование (HR Service)
-        hr_callback = BleScanCallback()
+        hr_callback = AegisScanCallback()
         scanner.startScan([scan_filter], settings, hr_callback)
 
         # И общее сканирование (для обнаружения часов без HR)
         general_settings_builder = autoclass("android.bluetooth.le.ScanSettings$Builder")()
         general_settings_builder.setScanMode(autoclass("android.bluetooth.le.ScanSettings").SCAN_MODE_LOW_LATENCY)
         general_settings = general_settings_builder.build()
-        general_callback = AllBleScanCallback()
+        general_callback = AegisScanCallback()
         scanner.startScan(None, general_settings, general_callback)
 
         # Ждём timeout_ms
@@ -354,9 +364,9 @@ class BLEHeartRateScanner:
 
         # Объединяем результаты
         all_found = {}
-        for dev in hr_callback.found_hr_devices:
+        for dev in self._extract_hr_devices(hr_callback):
             all_found[dev["address"]] = dev
-        for dev in general_callback.all_devices:
+        for dev in self._extract_all_devices(general_callback):
             if dev["address"] not in all_found:
                 all_found[dev["address"]] = dev
 
@@ -405,7 +415,7 @@ class BLEHeartRateScanner:
 
     def _android_connect(self, device_info):
         """Реальное Android BLE-подключение через pyjnius."""
-        from jnius import autoclass, cast, PythonJavaClass, java_method
+        from jnius import autoclass, cast
 
         address = device_info["address"]
         device = self._bluetooth_adapter.getRemoteDevice(address)
@@ -413,137 +423,13 @@ class BLEHeartRateScanner:
             log.error(f"BLE: устройство {address} не найдено")
             return False
 
-        # GattCallback для обработки подключения и характеристик
-        ble_scanner = self
-
-        class GattCallback(PythonJavaClass):
-            __javainterfaces__ = ["android/bluetooth/BluetoothGattCallback"]
-
-            def __init__(self):
-                super().__init__()
-                self.gatt = None
-                self.services_discovered = False
-
-            @java_method("(Landroid/bluetooth/BluetoothGatt;II)V")
-            def onConnectionStateChange(self, gatt, status, newState):
-                if newState == ble_scanner._BluetoothProfile.STATE_CONNECTED:
-                    log.info("BLE: подключено, обнаружение сервисов...")
-                    gatt.discoverServices()
-                elif newState == ble_scanner._BluetoothProfile.STATE_DISCONNECTED:
-                    log.info("BLE: отключено")
-                    ble_scanner.is_connected = False
-                    ble_scanner.connected_device_name = None
-                    ble_scanner.connected_device_address = None
-                    gatt.close()
-
-            @java_method("(Landroid/bluetooth/BluetoothGatt;I)V")
-            def onServicesDiscovered(self, gatt, status):
-                if status == ble_scanner._BluetoothGatt.GATT_SUCCESS:
-                    self.services_discovered = True
-                    services = gatt.getServices()
-                    hr_service = None
-                    for svc in services:
-                        svc_uuid = svc.getUuid().toString()
-                        if svc_uuid == HR_SERVICE_UUID:
-                            hr_service = svc
-                            break
-
-                    if hr_service is None:
-                        log.warning("BLE: HR Service не найден на устройстве")
-                        gatt.disconnect()
-                        return
-
-                    # Находим характеристику HR Measurement
-                    hr_char = None
-                    for char in hr_service.getCharacteristics():
-                        if char.getUuid().toString() == HR_MEASUREMENT_CHAR_UUID:
-                            hr_char = char
-                            break
-
-                    if hr_char is None:
-                        log.warning("BLE: HR Measurement характеристика не найдена")
-                        gatt.disconnect()
-                        return
-
-                    # Включаем уведомления
-                    gatt.setCharacteristicNotification(hr_char, True)
-
-                    # Записываем дескриптор Client Characteristic Configuration (CCCD)
-                    CCCD_UUID = "00002902-0000-1000-8000-00805f9b34fb"
-                    cccd = None
-                    for desc in hr_char.getDescriptors():
-                        if desc.getUuid().toString() == CCCD_UUID:
-                            cccd = desc
-                            break
-
-                    if cccd is not None:
-                        BluetoothGattDescriptor = autoclass("android.bluetooth.BluetoothGattDescriptor")
-                        ENABLE_NOTIFICATION_VALUE = autoclass("android.bluetooth.BluetoothGattDescriptor").ENABLE_NOTIFICATION_VALUE
-                        cccd.setValue(ENABLE_NOTIFICATION_VALUE)
-                        gatt.writeDescriptor(ccd)
-                    else:
-                        # Альтернативный способ записи CCCD
-                        BluetoothGattDescriptor = autoclass("android.bluetooth.BluetoothGattDescriptor")
-                        cccd_new = BluetoothGattDescriptor(
-                            autoclass("java.util.UUID").fromString(CCCD_UUID),
-                            0
-                        )
-                        enable_val = [0x01, 0x00]
-                        # Устанавливаем как byte array
-                        arr = autoclass("java.lang.reflect.Array").newInstance(
-                            autoclass("byte"), 2
-                        )
-                        arr[0] = 0x01
-                        arr[1] = 0x00
-                        cccd.setValue(arr)
-                        hr_char.addDescriptor(cccd_new)
-
-                    log.info("BLE: подписка на HR уведомления активна")
-
-            @java_method("(Landroid/bluetooth/BluetoothGatt;Landroid/bluetooth/BluetoothGattCharacteristic;I)V")
-            def onCharacteristicChanged(self, gatt, characteristic):
-                # Парсим Heart Rate Measurement (Bluetooth SIG spec)
-                value = characteristic.getValue()
-                if not value or len(value) < 2:
-                    return
-
-                first_byte = value[0] & 0xFF
-
-                # Бит 0: формат ЧСС (0 = UINT8, 1 = UINT16)
-                hr_format_16 = (first_byte & 0x01) != 0
-
-                # Бит 4: presence of RR-Intervals
-                rr_present = (first_byte & 0x10) != 0
-
-                # ЧСС
-                if hr_format_16:
-                    if len(value) >= 3:
-                        heart_rate = struct.unpack_from("<H", bytes(value), 1)[0]
-                    else:
-                        heart_rate = 0
-                    offset = 3
-                else:
-                    heart_rate = value[1] & 0xFF
-                    offset = 2
-
-                ble_scanner.current_heart_rate = heart_rate
-                log.debug(f"BLE HR: {heart_rate} bpm")
-
-                # RR-интервалы
-                if rr_present:
-                    while offset + 2 <= len(value):
-                        rr_raw = struct.unpack_from("<H", bytes(value), offset)[0]
-                        offset += 2
-                        # Спецификация BLE: RR в единицах 1/1024 секунды
-                        rr_ms = int((rr_raw / 1024.0) * 1000.0)
-                        if 200 < rr_ms < 2000:  # Физиологический фильтр
-                            ble_scanner.rr_intervals.append(rr_ms)
-
-        gatt_callback = GattCallback()
+        # Java-обёртка GattCallback (вместо PythonJavaClass, который не работает
+        # с абстрактными классами android/bluetooth/BluetoothGattCallback)
+        AegisGattCallback = autoclass("org.aegisneuro.aegisneuro.AegisGattCallback")
+        gatt_callback = AegisGattCallback()
 
         # Подключаемся (autoConnect=False для быстрого подключения)
         self._bluetooth_gatt = device.connectGatt(self._activity, False, gatt_callback)
-        gatt_callback.gatt = self._bluetooth_gatt
 
         self.connected_device_name = device_info.get("name", "")
         self.connected_device_address = address
@@ -602,14 +488,14 @@ def start_foreground_service():
         NotificationChannel = autoclass("android.app.NotificationChannel")
         NotificationManager = autoclass("android.app.NotificationManager")
         PendingIntent = autoclass("android.app.PendingIntent")
-        Build = autoclass("android.os.Build")
+        BuildVERSION = autoclass("android.os.Build$VERSION")
         Integer = autoclass("java.lang.Integer")
 
         CHANNEL_ID = "aegisneuro_foreground"
         NOTIFICATION_ID = 1001
 
         # Создаём NotificationChannel (Android 8+)
-        if Build.VERSION.SDK_INT >= 26:
+        if BuildVERSION.SDK_INT >= 26:
             channel_name = "AegisNeuro Сервис"
             channel_desc = "Мониторинг сердечного ритма и нейрорегуляция"
             importance = Integer.valueOf(NotificationManager.IMPORTANCE_LOW)
@@ -624,7 +510,7 @@ def start_foreground_service():
         # Строим уведомление
         NotificationBuilder = autoclass("android.app.Notification$Builder")
 
-        if Build.VERSION.SDK_INT >= 26:
+        if BuildVERSION.SDK_INT >= 26:
             builder = NotificationBuilder(activity, CHANNEL_ID)
         else:
             builder = NotificationBuilder(activity)
