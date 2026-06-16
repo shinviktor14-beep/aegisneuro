@@ -154,13 +154,10 @@ jobs:
         env:
           GRADLE_OPTS: "-Xmx4g -Dorg.gradle.jvmargs=-Xmx4g"
           JAVA_TOOL_OPTIONS: "-Xmx4g"
-          P4A_RELEASE_KEYSTORE: ${{ github.workspace }}/keystore/aegisneuro-release.keystore
-          P4A_RELEASE_KEYSTORE_PASSWD: ${{ secrets.AEGIS_KEYSTORE_PASS }}
-          P4A_RELEASE_KEYALIAS: aegisneuro
-          P4A_RELEASE_KEYALIAS_PASSWD: ${{ secrets.AEGIS_KEY_PASS }}
+
         run: |
           set -o pipefail
-          buildozer -v android release 2>&1 | tee build.log
+          buildozer -v android debug 2>&1 | tee build.log
           echo "=== APK contents ==="
           ls -laR bin/ 2>&1 | head -50 || true
 
@@ -191,7 +188,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: aegisneuro-arm64-release
+          name: aegisneuro-arm64-debug
           path: |
             bin/*.apk
             bin/*.aab
@@ -202,7 +199,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: aegisneuro-watch-release
+          name: aegisneuro-watch-debug
           path: wear/app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 14
