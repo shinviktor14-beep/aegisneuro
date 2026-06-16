@@ -52,3 +52,8 @@ build.log
 # Local diagnostics/tools
 .tools/
 artifacts/
+
+aegisneuro-arm64-*/
+aegisneuro-watch-*/
+*.apk
+*.aab
