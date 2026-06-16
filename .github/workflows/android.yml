@@ -69,9 +69,9 @@ jobs:
             ~/.buildozer/android/platform
             ~/.buildozer/android/tarballs
             .buildozer
-          key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+          key: buildozer-v2-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
           restore-keys: |
-            buildozer-${{ runner.os }}-
+            buildozer-v2-${{ runner.os }}-
 
       - name: Install system dependencies
         run: |
@@ -146,6 +146,10 @@ jobs:
           echo "=== buildozer.spec sha: $(sha256sum buildozer.spec | cut -d' ' -f1) ==="
           echo "=== keystore present: $(test -f keystore/aegisneuro-release.keystore && echo YES || echo NO) ==="
 
+      - name: Clean Buildozer build cache
+        run: |
+          rm -rf .buildozer/android/platform/build-*
+
       - name: Build Phone APK (release, arm64)
         env:
           GRADLE_OPTS: "-Xmx4g -Dorg.gradle.jvmargs=-Xmx4g"
@@ -190,7 +194,7 @@ jobs:
           name: aegisneuro-arm64-release
           path: |
             bin/*.apk
-            !bin/*.aab
+            bin/*.aab
           if-no-files-found: error
           retention-days: 14
 
@@ -212,6 +216,7 @@ jobs:
           body: "Auto-built Phone + Watch APKs (release-signed) from commit ${{ github.sha }}"
           files: |
             bin/*.apk
+            bin/*.aab
             wear/app/build/outputs/apk/release/*.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
