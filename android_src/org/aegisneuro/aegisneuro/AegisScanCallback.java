@@ -8,7 +8,7 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Concrete ScanCallback subclass — pyjnius cannot inherit abstract classes,
+ * Concrete ScanCallback subclass -- pyjnius cannot inherit abstract classes,
  * only interfaces. This wrapper forwards every callback to a single
  * onResult(String address, String name, String uuids, int rssi) method
  * that Python can override via @run_on_ui_thread.
@@ -82,7 +82,7 @@ public final class AegisScanCallback extends ScanCallback {
         }
     }
 
-    // JNI callbacks — implemented in Python via pyjnius
+    // JNI callbacks -- implemented in Python via pyjnius
     private native void nativeOnResult(String address, String name, int rssi, int hasHr);
     private native void nativeOnError(int errorCode);
 }

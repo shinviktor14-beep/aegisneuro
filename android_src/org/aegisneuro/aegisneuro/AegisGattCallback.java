@@ -11,7 +11,7 @@ import android.util.Log;
 import java.util.UUID;
 
 /**
- * Concrete BluetoothGattCallback subclass — pyjnius cannot inherit
+ * Concrete BluetoothGattCallback subclass -- pyjnius cannot inherit
  * abstract classes, only interfaces. This wrapper forwards GATT events
  * to simple string/int methods that Python can override.
  *
@@ -118,12 +118,12 @@ public final class AegisGattCallback extends BluetoothGattCallback {
         }
     }
 
-    // JNI callbacks — implemented in Python via pyjnius
+    // JNI callbacks -- implemented in Python via pyjnius
     private native void nativeOnConnectionState(String address, int status, int newState);
     private native void nativeOnServicesDiscovered(String address, int status, int hasHr);
     private native void onHeartRate(String address, int bpm, int rrCount, String rrData);
     private native void nativeOnDescriptorWrite(String address, int status);
 
-    // Rename to avoid clash — called from onCharacteristicChanged
+    // Rename to avoid clash -- called from onCharacteristicChanged
     private native void nativeOnHeartRate(String address, int bpm, int rrCount, String rrData);
 }

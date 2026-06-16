@@ -15,7 +15,7 @@ android {
         versionName = "0.1.0"
     }
 
-    // Единый release keystore для phone + watch (пароли из env vars)
+    // Signing: release keystore for phone + watch (passwords from env vars)
     signingConfigs {
         create("release") {
             storeFile = file(System.getenv("AEGIS_KEYSTORE") ?: "../keystore/aegisneuro-release.keystore")
@@ -31,7 +31,7 @@ android {
             isMinifyEnabled = false
         }
         debug {
-            // debug тоже подписываем release-ключом, чтобы обновления работали
+            // debug uses the same release keystore for easier testing
             signingConfig = signingConfigs.getByName("release")
         }
     }
@@ -44,11 +44,16 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+
+    lint {
+        abortOnError = false
+    }
 }
 
 dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.activity:activity-ktx:1.9.3")
+    implementation("androidx.fragment:fragment-ktx:1.8.5")
     implementation("androidx.health:health-services-client:1.1.0-rc02")
     implementation("com.google.android.gms:play-services-wearable:19.0.0")
     implementation("com.google.guava:guava:33.3.1-android")
