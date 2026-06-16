@@ -56,7 +56,7 @@ requirements = hostpython3==3.13.5,python3==3.13.5,kivy==2.3.1,numpy,pyjnius,kiv
 #android.key.alias = debug
 #android.key.pass = debug
 #android.store.pass = debug
-#android.release.artifact = aab
+android.release.artifact = apk
 
 [buildozer]
 log_level = 2
